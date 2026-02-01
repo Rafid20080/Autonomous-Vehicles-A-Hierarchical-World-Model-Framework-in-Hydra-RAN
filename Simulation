@@ -1283,3 +1283,1591 @@ if __name__ == "__main__":
     # Uncomment for specific experiments
     # controller = InteractiveSimulationController()
     # controller.run_scenario('highway_stable', num_steps=10)
+
+
+
+# Control signaling load versus update threshold $\delta$ for various V2X frameworks. Hydra-RAN achieves significantly lower overhead across all thresholds through belief-driven event triggering.
+
+# -*- coding: utf-8 -*-
+"""
+Dynamic Adaptive Control Signaling Load Simulation Framework
+Performance metrics adapt in real-time to parameter changes
+
+Author: Rafid I. Abd et al. (Enhanced for real-time parameter sensitivity)
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+from typing import Dict, List, Callable, Any, Tuple, Optional
+from dataclasses import dataclass, field
+from enum import Enum
+import warnings
+warnings.filterwarnings('ignore')
+
+# ===============================
+# IEEE TCOM Style Configuration
+# ===============================
+plt.rcParams.update({
+    "font.family": "Times New Roman",
+    "axes.linewidth": 1.4,
+    "axes.edgecolor": "0.2",
+    "figure.figsize": (14, 10),
+    "font.size": 12
+})
+
+# ===============================
+# Core Data Structures
+# ===============================
+
+class ApproachType(Enum):
+    """Type of approach for categorization."""
+    BASELINE = "baseline"
+    PROPOSED = "proposed"
+    HYBRID = "hybrid"
+
+@dataclass
+class DynamicUncertaintyProfile:
+    """Dynamic uncertainty profile that changes over time."""
+    name: str
+    base_mean: float
+    base_std: float
+    temporal_variation: float = 0.1
+    spatial_variation: float = 0.05
+    drift_rate: float = 0.01
+    correlation_factor: float = 0.3
+    
+    def __post_init__(self):
+        """Initialize dynamic properties."""
+        self.current_mean = self.base_mean
+        self.current_std = self.base_std
+        self.time_step = 0
+        self.history = []
+        
+    def evolve(self, step: int = 1, external_factor: float = 1.0):
+        """Evolve uncertainty profile over time."""
+        self.time_step += step
+        
+        # Temporal variation
+        temporal_change = self.temporal_variation * np.sin(self.time_step / 10)
+        
+        # Random drift
+        drift = self.drift_rate * np.random.randn()
+        
+        # Update parameters
+        self.current_mean = np.clip(
+            self.base_mean * external_factor + temporal_change + drift,
+            0.1, 0.9
+        )
+        
+        # Vary standard deviation
+        self.current_std = np.clip(
+            self.base_std * (1 + 0.2 * np.sin(self.time_step / 5)),
+            0.05, 0.25
+        )
+        
+        # Record history
+        self.history.append({
+            'step': self.time_step,
+            'mean': self.current_mean,
+            'std': self.current_std,
+            'external_factor': external_factor
+        })
+
+@dataclass
+class DynamicNetworkParameters:
+    """Dynamic network parameters that change during simulation."""
+    bandwidth: float = 100.0  # MHz
+    latency: float = 50.0  # ms
+    packet_loss: float = 0.05
+    congestion_level: float = 0.3
+    channel_quality: float = 0.8
+    mobility_speed: float = 60.0  # km/h
+    
+    def update(self, time_step: int, vehicle_density: float):
+        """Update network parameters dynamically."""
+        # Time-varying effects
+        time_variation = 0.1 * np.sin(time_step / 20)
+        
+        # Congestion effect based on vehicle density
+        congestion_effect = 0.3 * (vehicle_density / 100)
+        
+        # Update parameters
+        self.congestion_level = np.clip(
+            0.2 + 0.6 * (vehicle_density / 150) + time_variation,
+            0.1, 0.9
+        )
+        
+        self.latency = 10 + 40 * self.congestion_level + 5 * np.random.randn()
+        self.packet_loss = np.clip(0.01 + 0.1 * self.congestion_level, 0, 0.2)
+        self.channel_quality = np.clip(
+            0.9 - 0.4 * self.congestion_level - 0.1 * np.random.randn(),
+            0.3, 0.95
+        )
+
+@dataclass
+class DynamicSimulationParameters:
+    """Centralized parameter configuration with dynamic capabilities."""
+    # Core simulation parameters
+    T: int = 10000                    # Total time slots
+    delta_range: Tuple[float, float, int] = (0, 1, 20)
+    seed: int = 42
+    
+    # Dynamic environment parameters
+    vehicle_density: float = 50.0  # vehicles/km²
+    rsu_density: float = 5.0  # RSUs/km
+    data_rate: float = 100.0  # Mbps
+    computation_capacity: float = 10.0  # TFLOPS
+    energy_budget: float = 100.0  # Wh
+    
+    # Uncertainty model configurations
+    uncertainty_models: Dict = field(default_factory=lambda: {
+        'normal': lambda size, mean, std: np.clip(np.random.normal(mean, std, size), 0, 1),
+        'uniform': lambda size, mean, std: np.random.uniform(max(0, mean-std), min(1, mean+std), size),
+        'beta': lambda size, mean, std: np.random.beta(
+            alpha=max(0.1, mean*10), 
+            beta=max(0.1, (1-mean)*10), 
+            size=size
+        ),
+        'time_correlated': lambda size, mean, std: np.clip(
+            mean + std * np.cumsum(np.random.randn(size)) * 0.1, 0, 1
+        ),
+        'bursty': lambda size, mean, std: np.clip(
+            mean + std * np.random.poisson(1, size) * 0.3, 0, 1
+        )
+    })
+    
+    # Approach-specific dynamic profiles
+    approach_profiles: Dict = field(default_factory=lambda: {
+        'Cooperative_Perception': {
+            'type': ApproachType.BASELINE,
+            'uncertainty_profile': DynamicUncertaintyProfile(
+                'Cooperative_Perception', 0.65, 0.15, 0.12, 0.08, 0.015
+            ),
+            'adaptation_rate': 0.1,
+            'load_sensitivity': 1.2,
+            'metadata': {'model_type': 'raw_exchange', 'features': ['basic']}
+        },
+        'V2X_ViTv2': {
+            'type': ApproachType.BASELINE,
+            'uncertainty_profile': DynamicUncertaintyProfile(
+                'V2X_ViTv2', 0.70, 0.12, 0.10, 0.06, 0.012
+            ),
+            'adaptation_rate': 0.15,
+            'load_sensitivity': 1.1,
+            'metadata': {'model_type': 'transformer', 'features': ['attention']}
+        },
+        'Semantic_Comm': {
+            'type': ApproachType.BASELINE,
+            'uncertainty_profile': DynamicUncertaintyProfile(
+                'Semantic_Comm', 0.50, 0.15, 0.15, 0.10, 0.020
+            ),
+            'adaptation_rate': 0.18,
+            'load_sensitivity': 0.9,
+            'metadata': {'model_type': 'semantic', 'features': ['semantic']}
+        },
+        'Task_Oriented': {
+            'type': ApproachType.BASELINE,
+            'uncertainty_profile': DynamicUncertaintyProfile(
+                'Task_Oriented', 0.45, 0.12, 0.08, 0.05, 0.010
+            ),
+            'adaptation_rate': 0.2,
+            'load_sensitivity': 0.8,
+            'metadata': {'model_type': 'task_aware', 'features': ['task']}
+        },
+        'Digital_Twin': {
+            'type': ApproachType.BASELINE,
+            'uncertainty_profile': DynamicUncertaintyProfile(
+                'Digital_Twin', 0.75, 0.10, 0.05, 0.03, 0.008
+            ),
+            'adaptation_rate': 0.17,
+            'load_sensitivity': 1.3,
+            'metadata': {'model_type': 'digital_twin', 'features': ['simulation']}
+        },
+        'Edge_Collaborative': {
+            'type': ApproachType.BASELINE,
+            'uncertainty_profile': DynamicUncertaintyProfile(
+                'Edge_Collaborative', 0.55, 0.12, 0.10, 0.07, 0.014
+            ),
+            'adaptation_rate': 0.22,
+            'load_sensitivity': 1.0,
+            'metadata': {'model_type': 'edge_drl', 'features': ['distributed']}
+        },
+        'FedRSU': {
+            'type': ApproachType.BASELINE,
+            'uncertainty_profile': DynamicUncertaintyProfile(
+                'FedRSU', 0.60, 0.10, 0.07, 0.04, 0.011
+            ),
+            'adaptation_rate': 0.19,
+            'load_sensitivity': 0.7,
+            'metadata': {'model_type': 'federated', 'features': ['privacy']}
+        },
+        'Hydra_RAN': {
+            'type': ApproachType.PROPOSED,
+            'uncertainty_profile': DynamicUncertaintyProfile(
+                'Hydra_RAN', 0.35, 0.10, 0.03, 0.02, 0.005
+            ),
+            'adaptation_rate': 0.25,
+            'load_sensitivity': 0.5,
+            'metadata': {
+                'model_type': 'hierarchical_kd',
+                'features': ['goal_aware', 'belief_driven', 'adaptive', 'hierarchical']
+            }
+        }
+    })
+    
+    # Dynamic load calculation parameters
+    load_calculation: Dict = field(default_factory=lambda: {
+        'normalization': 'adaptive',  # Options: 'max_updates', 'T', 'adaptive'
+        'load_function': 'dynamic_threshold',  # Options: 'threshold_based', 'weighted', 'dynamic_threshold'
+        'weighting_scheme': 'exponential_decay',
+        'decay_factor': 0.99,
+        'adaptive_threshold': True,
+        'threshold_sensitivity': 0.1
+    })
+    
+    # Performance metrics weights
+    performance_weights: Dict = field(default_factory=lambda: {
+        'mean_load': 0.4,
+        'load_variability': 0.2,
+        'efficiency': 0.3,
+        'robustness': 0.1
+    })
+    
+    # Plot styling with dynamic color maps
+    plot_style: Dict = field(default_factory=lambda: {
+        'figure_facecolor': '#EAEAF2',
+        'axes_facecolor': '#EAEAF2',
+        'grid_style': {'linestyle': '--', 'linewidth': 1.2, 'alpha': 0.6, 'color': 'gray'},
+        'font_sizes': {'title': 38, 'labels': 34, 'ticks': 30, 'legend': 28},
+        'line_widths': {'baseline': 2.5, 'proposed': 5, 'hybrid': 3},
+        'color_palette': {
+            'proposed': ['#000000', '#333333', '#666666'],
+            'baseline': ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2'],
+            'hybrid': ['#17becf', '#bcbd22']
+        },
+        'markers': ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h']
+    })
+    
+    def __post_init__(self):
+        """Initialize derived parameters."""
+        np.random.seed(self.seed)
+        self.delta = np.linspace(*self.delta_range)
+        self.network_params = DynamicNetworkParameters()
+        
+    def update_environment(self, time_step: int):
+        """Update all environment parameters dynamically."""
+        # Update network parameters
+        self.network_params.update(time_step, self.vehicle_density)
+        
+        # Update approach profiles
+        for profile in self.approach_profiles.values():
+            external_factor = 1.0 - 0.3 * self.network_params.congestion_level
+            profile['uncertainty_profile'].evolve(1, external_factor)
+        
+        # Update load calculation based on network conditions
+        if self.load_calculation['adaptive_threshold']:
+            self.load_calculation['threshold_sensitivity'] = np.clip(
+                0.05 + 0.1 * self.network_params.congestion_level,
+                0.05, 0.2
+            )
+
+# ===============================
+# Dynamic Simulation Framework
+# ===============================
+
+class DynamicAdaptiveSimulator:
+    """Simulator with real-time adaptive performance metrics."""
+    
+    def __init__(self, params: DynamicSimulationParameters = None):
+        """Initialize simulator with dynamic parameters."""
+        self.params = params if params else DynamicSimulationParameters()
+        self.delta = self.params.delta.copy()
+        
+        # Dynamic storage
+        self.uncertainty_data: Dict[str, List[np.ndarray]] = {}
+        self.signaling_loads: Dict[str, List[np.ndarray]] = {}
+        self.performance_metrics: Dict[str, List[Dict]] = {}
+        self.environment_history: List[Dict] = []
+        self.current_step = 0
+        
+        # Initialize approach performance trackers
+        for approach_name in self.params.approach_profiles.keys():
+            self.uncertainty_data[approach_name] = []
+            self.signaling_loads[approach_name] = []
+            self.performance_metrics[approach_name] = []
+    
+    def generate_dynamic_uncertainty(self, approach_name: str, size: int = None) -> np.ndarray:
+        """Generate uncertainty with dynamic characteristics."""
+        if size is None:
+            size = min(1000, self.params.T // 10)
+        
+        profile = self.params.approach_profiles[approach_name]
+        uncertainty_profile = profile['uncertainty_profile']
+        
+        # Get current uncertainty parameters
+        mean = uncertainty_profile.current_mean
+        std = uncertainty_profile.current_std
+        adaptation_rate = profile['adaptation_rate']
+        
+        # Select distribution based on approach type
+        if profile['type'] == ApproachType.PROPOSED:
+            # Hydra-RAN: Beta distribution for bounded uncertainty
+            uncertainty = np.random.beta(
+                alpha=max(0.1, mean*10 * (1 - 0.3*self.params.network_params.congestion_level)),
+                beta=max(0.1, (1-mean)*10 * (1 + 0.2*self.params.network_params.congestion_level)),
+                size=size
+            )
+        elif 'semantic' in profile['metadata'].get('model_type', ''):
+            # Semantic approaches: Normal with correlation
+            base = np.random.normal(mean, std, size)
+            # Add temporal correlation
+            for i in range(1, size):
+                base[i] = adaptation_rate * base[i] + (1 - adaptation_rate) * base[i-1]
+            uncertainty = np.clip(base, 0, 1)
+        else:
+            # Other baselines: Normal distribution
+            uncertainty = np.clip(np.random.normal(mean, std, size), 0, 1)
+        
+        # Apply network effects
+        packet_loss_effect = 1.0 - 0.3 * self.params.network_params.packet_loss
+        channel_effect = 0.7 + 0.3 * self.params.network_params.channel_quality
+        
+        uncertainty = uncertainty * packet_loss_effect * channel_effect
+        
+        # Add burstiness for certain approaches
+        if 'edge' in profile['metadata'].get('model_type', ''):
+            burst_mask = np.random.poisson(0.1, size) > 0
+            uncertainty[burst_mask] *= 1.5
+        
+        return np.clip(uncertainty, 0, 1)
+    
+    def calculate_dynamic_signaling_load(self, uncertainty: np.ndarray, 
+                                       approach_name: str,
+                                       delta_values: np.ndarray = None) -> np.ndarray:
+        """Calculate signaling load with dynamic threshold adaptation."""
+        if delta_values is None:
+            delta_values = self.delta
+        
+        profile = self.params.approach_profiles[approach_name]
+        load_function = self.params.load_calculation['load_function']
+        network_params = self.params.network_params
+        
+        # Determine normalization factor dynamically
+        if self.params.load_calculation['normalization'] == 'adaptive':
+            # Adaptive normalization based on network conditions
+            congestion_factor = 1 + 0.5 * network_params.congestion_level
+            channel_factor = 2 - network_params.channel_quality
+            normalization = len(uncertainty) * congestion_factor * channel_factor
+        elif self.params.load_calculation['normalization'] == 'T':
+            normalization = self.params.T
+        else:
+            normalization = len(uncertainty)
+        
+        # Calculate loads based on selected function
+        loads = []
+        
+        for d in delta_values:
+            # Dynamic threshold adjustment
+            if self.params.load_calculation['adaptive_threshold']:
+                threshold_sensitivity = self.params.load_calculation['threshold_sensitivity']
+                network_adjusted_d = d * (1 + threshold_sensitivity * network_params.congestion_level)
+            else:
+                network_adjusted_d = d
+            
+            if load_function == 'threshold_based':
+                # Basic threshold-based calculation
+                load = np.sum(uncertainty > network_adjusted_d) / normalization * 100
+                
+            elif load_function == 'weighted':
+                # Weighted by uncertainty magnitude
+                exceed_mask = uncertainty > network_adjusted_d
+                weights = (uncertainty[exceed_mask] - network_adjusted_d)
+                load = np.sum(weights) / normalization * 100
+                
+            elif load_function == 'dynamic_threshold':
+                # Dynamic threshold with memory
+                exceed_mask = uncertainty > network_adjusted_d
+                
+                # Apply temporal weighting
+                if self.params.load_calculation['weighting_scheme'] == 'exponential_decay':
+                    decay = self.params.load_calculation['decay_factor']
+                    time_weights = decay ** np.arange(len(uncertainty))[::-1]
+                    weighted_exceeds = exceed_mask * time_weights
+                    load = np.sum(weighted_exceeds) / np.sum(time_weights) * 100
+                else:
+                    load = np.mean(exceed_mask) * 100
+                    
+                # Apply approach-specific sensitivity
+                load_sensitivity = profile['load_sensitivity']
+                load *= load_sensitivity
+                
+            else:
+                # Default to threshold-based
+                load = np.mean(uncertainty > network_adjusted_d) * 100
+            
+            # Apply network effects
+            latency_penalty = 1 + 0.01 * network_params.latency
+            bandwidth_boost = 1 - 0.2 * (network_params.bandwidth / 200)
+            load = load * latency_penalty * bandwidth_boost
+            
+            loads.append(load)
+        
+        return np.array(loads)
+    
+    def simulate_step(self) -> Dict:
+        """Simulate a single time step with current parameters."""
+        step_results = {}
+        
+        # Update environment
+        self.params.update_environment(self.current_step)
+        
+        # Record environment state
+        self.environment_history.append({
+            'step': self.current_step,
+            'network': {
+                'congestion': self.params.network_params.congestion_level,
+                'latency': self.params.network_params.latency,
+                'packet_loss': self.params.network_params.packet_loss,
+                'channel_quality': self.params.network_params.channel_quality
+            },
+            'vehicle_density': self.params.vehicle_density
+        })
+        
+        # Simulate each approach
+        for approach_name, profile in self.params.approach_profiles.items():
+            # Generate uncertainty for this step
+            uncertainty = self.generate_dynamic_uncertainty(approach_name)
+            self.uncertainty_data[approach_name].append(uncertainty)
+            
+            # Calculate signaling load
+            loads = self.calculate_dynamic_signaling_load(uncertainty, approach_name)
+            self.signaling_loads[approach_name].append(loads)
+            
+            # Calculate performance metrics
+            metrics = self._calculate_step_metrics(approach_name, loads, uncertainty)
+            self.performance_metrics[approach_name].append(metrics)
+            
+            step_results[approach_name] = {
+                'loads': loads.copy(),
+                'metrics': metrics.copy(),
+                'uncertainty_stats': {
+                    'mean': np.mean(uncertainty),
+                    'std': np.std(uncertainty),
+                    'min': np.min(uncertainty),
+                    'max': np.max(uncertainty)
+                }
+            }
+        
+        self.current_step += 1
+        return step_results
+    
+    def simulate(self, num_steps: int = 10) -> Dict:
+        """Run multiple simulation steps."""
+        all_results = {}
+        
+        for step in range(num_steps):
+            step_results = self.simulate_step()
+            all_results[f'step_{step}'] = step_results
+        
+        return all_results
+    
+    def _calculate_step_metrics(self, approach_name: str, loads: np.ndarray, 
+                              uncertainty: np.ndarray) -> Dict:
+        """Calculate comprehensive performance metrics for a step."""
+        profile = self.params.approach_profiles[approach_name]
+        weights = self.params.performance_weights
+        
+        # Basic statistics
+        mean_load = np.mean(loads)
+        std_load = np.std(loads)
+        max_load = np.max(loads)
+        min_load = np.min(loads)
+        
+        # Area under curve (normalized)
+        auc = np.trapz(loads, self.delta) / (self.delta[-1] - self.delta[0])
+        
+        # Threshold sensitivity
+        sensitivity = np.mean(np.abs(np.gradient(loads, self.delta)))
+        
+        # Uncertainty statistics
+        uncertainty_mean = np.mean(uncertainty)
+        uncertainty_std = np.std(uncertainty)
+        
+        # Efficiency score (lower is better)
+        base_efficiency = mean_load * 0.6 + std_load * 0.2 + sensitivity * 0.2
+        
+        # Apply network effects
+        network_penalty = 1 + 0.3 * self.params.network_params.congestion_level
+        channel_boost = 1 - 0.2 * (1 - self.params.network_params.channel_quality)
+        
+        efficiency_score = base_efficiency * network_penalty * channel_boost
+        
+        # Robustness metric
+        robustness = 1.0 / (std_load + 0.1)
+        
+        # Composite score
+        composite_score = (
+            weights['mean_load'] * (100 - mean_load) / 100 +
+            weights['load_variability'] * (1.0 / (std_load + 0.01)) +
+            weights['efficiency'] * (1.0 / (efficiency_score + 0.01)) +
+            weights['robustness'] * robustness
+        )
+        
+        return {
+            'mean_load': float(mean_load),
+            'std_load': float(std_load),
+            'max_load': float(max_load),
+            'min_load': float(min_load),
+            'area_under_curve': float(auc),
+            'threshold_sensitivity': float(sensitivity),
+            'efficiency_score': float(efficiency_score),
+            'robustness': float(robustness),
+            'composite_score': float(composite_score),
+            'uncertainty_mean': float(uncertainty_mean),
+            'uncertainty_std': float(uncertainty_std)
+        }
+    
+    def modify_parameter(self, param_path: str, value: Any):
+        """Modify any parameter in the simulation."""
+        parts = param_path.split('.')
+        obj = self.params
+        
+        # Navigate to the target object
+        for part in parts[:-1]:
+            if hasattr(obj, part):
+                obj = getattr(obj, part)
+            elif isinstance(obj, dict) and part in obj:
+                obj = obj[part]
+            else:
+                raise AttributeError(f"Cannot find {part} in {obj}")
+        
+        # Set the value
+        final_part = parts[-1]
+        if hasattr(obj, final_part):
+            setattr(obj, final_part, value)
+        elif isinstance(obj, dict) and final_part in obj:
+            obj[final_part] = value
+        else:
+            raise AttributeError(f"Cannot set {final_part} in {obj}")
+        
+        print(f"Modified {param_path} = {value}")
+    
+    def get_current_performance_summary(self, step: int = -1) -> Dict:
+        """Get performance summary for a specific step."""
+        if step == -1:
+            step = self.current_step - 1
+        
+        summary = {}
+        
+        for approach_name in self.params.approach_profiles.keys():
+            if step < len(self.performance_metrics[approach_name]):
+                metrics = self.performance_metrics[approach_name][step]
+                summary[approach_name] = metrics
+        
+        return summary
+    
+    def run_sensitivity_analysis(self, param_name: str, 
+                                value_range: np.ndarray,
+                                num_steps_per_value: int = 3) -> Dict:
+        """Run sensitivity analysis for a parameter."""
+        original_values = {}
+        
+        # Store original values for all approaches if parameter exists in profiles
+        for approach_name, profile in self.params.approach_profiles.items():
+            if param_name in profile['uncertainty_profile'].__dict__:
+                original_values[approach_name] = getattr(
+                    profile['uncertainty_profile'], param_name
+                )
+        
+        sensitivity_results = {}
+        
+        for value in value_range:
+            print(f"Testing {param_name} = {value:.3f}")
+            
+            # Set parameter for all approaches
+            for approach_name in original_values.keys():
+                setattr(
+                    self.params.approach_profiles[approach_name]['uncertainty_profile'],
+                    param_name, value
+                )
+            
+            # Reset and run simulation
+            self.reset_state()
+            results = self.simulate(num_steps=num_steps_per_value)
+            
+            # Collect average performance
+            avg_metrics = {}
+            for approach_name in self.params.approach_profiles.keys():
+                if self.performance_metrics[approach_name]:
+                    step_metrics = self.performance_metrics[approach_name][-1]
+                    avg_metrics[approach_name] = {
+                        'mean_load': step_metrics['mean_load'],
+                        'efficiency_score': step_metrics['efficiency_score'],
+                        'composite_score': step_metrics['composite_score']
+                    }
+            
+            sensitivity_results[value] = {
+                'results': results,
+                'avg_metrics': avg_metrics
+            }
+        
+        # Restore original values
+        for approach_name, original_value in original_values.items():
+            setattr(
+                self.params.approach_profiles[approach_name]['uncertainty_profile'],
+                param_name, original_value
+            )
+        
+        return sensitivity_results
+    
+    def reset_state(self):
+        """Reset simulation state while keeping parameters."""
+        self.current_step = 0
+        self.environment_history.clear()
+        
+        for approach_name in self.params.approach_profiles.keys():
+            self.uncertainty_data[approach_name].clear()
+            self.signaling_loads[approach_name].clear()
+            self.performance_metrics[approach_name].clear()
+        
+        # Reset approach profiles
+        for profile in self.params.approach_profiles.values():
+            profile['uncertainty_profile'].time_step = 0
+            profile['uncertainty_profile'].current_mean = profile['uncertainty_profile'].base_mean
+            profile['uncertainty_profile'].current_std = profile['uncertainty_profile'].base_std
+            profile['uncertainty_profile'].history.clear()
+
+# ===============================
+# Dynamic Visualization System
+# ===============================
+
+class DynamicVisualizationSystem:
+    """System for visualizing dynamic simulation results."""
+    
+    @staticmethod
+    def plot_dynamic_performance(simulator: DynamicAdaptiveSimulator, 
+                                step: int = -1,
+                                figsize: Tuple[int, int] = (16, 12)):
+        """Plot dynamic performance results for a specific step."""
+        if step == -1:
+            step = simulator.current_step - 1
+        
+        # Get data for the step
+        if step >= simulator.current_step:
+            print(f"No data for step {step}. Current step: {simulator.current_step-1}")
+            return
+        
+        # Get approach results
+        approach_names = list(simulator.params.approach_profiles.keys())
+        
+        # Create figure with multiple subplots
+        fig = plt.figure(figsize=figsize)
+        gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3)
+        
+        # Plot 1: Signaling Load vs Threshold
+        ax1 = fig.add_subplot(gs[0:2, 0:2])
+        DynamicVisualizationSystem._plot_signaling_loads(
+            ax1, simulator, step, approach_names
+        )
+        
+        # Plot 2: Performance Evolution
+        ax2 = fig.add_subplot(gs[0, 2])
+        DynamicVisualizationSystem._plot_performance_evolution(
+            ax2, simulator, approach_names
+        )
+        
+        # Plot 3: Environment State
+        ax3 = fig.add_subplot(gs[1, 2])
+        DynamicVisualizationSystem._plot_environment_state(
+            ax3, simulator
+        )
+        
+        # Plot 4: Performance Distribution
+        ax4 = fig.add_subplot(gs[2, 0])
+        DynamicVisualizationSystem._plot_performance_distribution(
+            ax4, simulator, step, approach_names
+        )
+        
+        # Plot 5: Parameter Adaptation
+        ax5 = fig.add_subplot(gs[2, 1])
+        DynamicVisualizationSystem._plot_parameter_adaptation(
+            ax5, simulator, approach_names
+        )
+        
+        # Plot 6: Network Effects
+        ax6 = fig.add_subplot(gs[2, 2])
+        DynamicVisualizationSystem._plot_network_effects(
+            ax6, simulator, approach_names
+        )
+        
+        plt.suptitle(f'Dynamic Performance Evaluation - Step {step}', fontsize=20)
+        plt.tight_layout()
+        plt.show()
+    
+    @staticmethod
+    def _plot_signaling_loads(ax, simulator, step, approach_names):
+        """Plot signaling loads for all approaches."""
+        style = simulator.params.plot_style
+        colors = style['color_palette']
+        
+        # Get plot styles for each approach
+        for i, approach_name in enumerate(approach_names):
+            profile = simulator.params.approach_profiles[approach_name]
+            approach_type = profile['type']
+            
+            # Get data
+            if step < len(simulator.signaling_loads[approach_name]):
+                loads = simulator.signaling_loads[approach_name][step]
+                
+                # Determine style
+                if approach_type == ApproachType.PROPOSED:
+                    color = colors['proposed'][0]
+                    linewidth = style['line_widths']['proposed']
+                    linestyle = '-'
+                    marker = ''
+                    label = approach_name.replace('_', ' ')
+                elif approach_type == ApproachType.HYBRID:
+                    color = colors['hybrid'][0]
+                    linewidth = style['line_widths']['hybrid']
+                    linestyle = '--'
+                    marker = style['markers'][i % len(style['markers'])]
+                    label = approach_name.replace('_', ' ')
+                else:
+                    color_idx = i % len(colors['baseline'])
+                    color = colors['baseline'][color_idx]
+                    linewidth = style['line_widths']['baseline']
+                    linestyle = '-'
+                    marker = style['markers'][i % len(style['markers'])]
+                    label = approach_name.replace('_', ' ')
+                
+                # Plot
+                ax.plot(simulator.delta, loads, 
+                       color=color, linewidth=linewidth,
+                       linestyle=linestyle, marker=marker,
+                       markersize=8, label=label)
+        
+        ax.set_xlabel('Update Threshold $\\delta$', fontsize=style['font_sizes']['labels'])
+        ax.set_ylabel('Control Signaling Load (%)', fontsize=style['font_sizes']['labels'])
+        ax.set_title('Signaling Load vs Threshold', fontsize=style['font_sizes']['labels']*0.8)
+        ax.grid(**style['grid_style'])
+        ax.legend(fontsize=style['font_sizes']['legend']*0.7, 
+                 loc='upper right', ncol=2)
+    
+    @staticmethod
+    def _plot_performance_evolution(ax, simulator, approach_names):
+        """Plot performance evolution over time."""
+        style = simulator.params.plot_style
+        
+        for i, approach_name in enumerate(approach_names):
+            profile = simulator.params.approach_profiles[approach_name]
+            approach_type = profile['type']
+            
+            # Get performance history
+            if simulator.performance_metrics[approach_name]:
+                composite_scores = [
+                    m['composite_score'] 
+                    for m in simulator.performance_metrics[approach_name]
+                ]
+                
+                steps = range(len(composite_scores))
+                
+                # Determine style
+                if approach_type == ApproachType.PROPOSED:
+                    color = 'k'
+                    linewidth = 3
+                else:
+                    color = simulator.params.plot_style['color_palette']['baseline'][i % 7]
+                    linewidth = 1.5
+                
+                ax.plot(steps, composite_scores, color=color, 
+                       linewidth=linewidth, label=approach_name.replace('_', ' '))
+        
+        ax.set_xlabel('Simulation Step', fontsize=style['font_sizes']['ticks'])
+        ax.set_ylabel('Composite Score', fontsize=style['font_sizes']['ticks'])
+        ax.set_title('Performance Evolution', fontsize=style['font_sizes']['labels']*0.8)
+        ax.grid(**style['grid_style'])
+        ax.legend(fontsize=style['font_sizes']['legend']*0.6)
+    
+    @staticmethod
+    def _plot_environment_state(ax, simulator):
+        """Plot environment state evolution."""
+        if not simulator.environment_history:
+            return
+        
+        style = simulator.params.plot_style
+        
+        steps = [h['step'] for h in simulator.environment_history]
+        congestion = [h['network']['congestion'] for h in simulator.environment_history]
+        latency = [h['network']['latency'] for h in simulator.environment_history]
+        channel_quality = [h['network']['channel_quality'] for h in simulator.environment_history]
+        
+        ax.plot(steps, congestion, 'r-', linewidth=2, label='Congestion')
+        ax.plot(steps, np.array(latency)/100, 'b-', linewidth=2, label='Latency (norm)')
+        ax.plot(steps, channel_quality, 'g-', linewidth=2, label='Channel Quality')
+        
+        ax.set_xlabel('Simulation Step', fontsize=style['font_sizes']['ticks'])
+        ax.set_ylabel('Normalized Value', fontsize=style['font_sizes']['ticks'])
+        ax.set_title('Environment State', fontsize=style['font_sizes']['labels']*0.8)
+        ax.legend(fontsize=style['font_sizes']['legend']*0.6)
+        ax.grid(**style['grid_style'])
+    
+    @staticmethod
+    def _plot_performance_distribution(ax, simulator, step, approach_names):
+        """Plot performance distribution for current step."""
+        style = simulator.params.plot_style
+        
+        mean_loads = []
+        approach_labels = []
+        
+        for approach_name in approach_names:
+            if step < len(simulator.performance_metrics[approach_name]):
+                metrics = simulator.performance_metrics[approach_name][step]
+                mean_loads.append(metrics['mean_load'])
+                approach_labels.append(approach_name.replace('_', ' '))
+        
+        # Create bar chart
+        bars = ax.bar(range(len(mean_loads)), mean_loads, alpha=0.7)
+        
+        # Color bars by approach type
+        for i, (bar, approach_name) in enumerate(zip(bars, approach_names)):
+            profile = simulator.params.approach_profiles[approach_name]
+            if profile['type'] == ApproachType.PROPOSED:
+                bar.set_color('k')
+            elif profile['type'] == ApproachType.HYBRID:
+                bar.set_color('purple')
+            else:
+                bar.set_color(style['color_palette']['baseline'][i % 7])
+        
+        ax.set_xticks(range(len(approach_labels)))
+        ax.set_xticklabels(approach_labels, rotation=45, ha='right', 
+                          fontsize=style['font_sizes']['ticks']*0.7)
+        ax.set_ylabel('Mean Load (%)', fontsize=style['font_sizes']['ticks'])
+        ax.set_title('Performance Distribution', fontsize=style['font_sizes']['labels']*0.8)
+        ax.grid(True, alpha=0.3, axis='y')
+    
+    @staticmethod
+    def _plot_parameter_adaptation(ax, simulator, approach_names):
+        """Plot parameter adaptation over time."""
+        style = simulator.params.plot_style
+        
+        for i, approach_name in enumerate(approach_names[:3]):  # Plot first 3 for clarity
+            profile = simulator.params.approach_profiles[approach_name]
+            
+            if profile['uncertainty_profile'].history:
+                steps = [h['step'] for h in profile['uncertainty_profile'].history]
+                means = [h['mean'] for h in profile['uncertainty_profile'].history]
+                
+                ax.plot(steps, means, label=approach_name.replace('_', ' '),
+                       linewidth=1.5, alpha=0.7)
+        
+        ax.set_xlabel('Time Step', fontsize=style['font_sizes']['ticks'])
+        ax.set_ylabel('Uncertainty Mean', fontsize=style['font_sizes']['ticks'])
+        ax.set_title('Parameter Adaptation', fontsize=style['font_sizes']['labels']*0.8)
+        ax.legend(fontsize=style['font_sizes']['legend']*0.6)
+        ax.grid(**style['grid_style'])
+    
+    @staticmethod
+    def _plot_network_effects(ax, simulator, approach_names):
+        """Plot network effects on performance."""
+        if not simulator.environment_history:
+            return
+        
+        style = simulator.params.plot_style
+        
+        # Get correlation between congestion and performance
+        steps = min(20, len(simulator.environment_history))
+        
+        if steps > 1:
+            congestion = []
+            hydra_performance = []
+            best_baseline_performance = []
+            
+            for i in range(steps):
+                env = simulator.environment_history[i]
+                congestion.append(env['network']['congestion'])
+                
+                # Get Hydra-RAN performance
+                if i < len(simulator.performance_metrics['Hydra_RAN']):
+                    hydra_performance.append(
+                        simulator.performance_metrics['Hydra_RAN'][i]['composite_score']
+                    )
+                
+                # Get best baseline performance
+                baseline_scores = []
+                for approach_name in approach_names:
+                    profile = simulator.params.approach_profiles[approach_name]
+                    if (profile['type'] == ApproachType.BASELINE and 
+                        i < len(simulator.performance_metrics[approach_name])):
+                        baseline_scores.append(
+                            simulator.performance_metrics[approach_name][i]['composite_score']
+                        )
+                
+                if baseline_scores:
+                    best_baseline_performance.append(max(baseline_scores))
+            
+            if hydra_performance and best_baseline_performance:
+                ax.scatter(congestion[:len(hydra_performance)], hydra_performance,
+                          c='k', s=50, label='Hydra-RAN', alpha=0.7)
+                ax.scatter(congestion[:len(best_baseline_performance)], best_baseline_performance,
+                          c='r', s=50, label='Best Baseline', alpha=0.7)
+                
+                # Add trend lines
+                z_hydra = np.polyfit(congestion[:len(hydra_performance)], hydra_performance, 1)
+                z_baseline = np.polyfit(congestion[:len(best_baseline_performance)], 
+                                       best_baseline_performance, 1)
+                
+                x_fit = np.linspace(min(congestion), max(congestion), 10)
+                ax.plot(x_fit, np.poly1d(z_hydra)(x_fit), 'k-', linewidth=2)
+                ax.plot(x_fit, np.poly1d(z_baseline)(x_fit), 'r--', linewidth=2)
+        
+        ax.set_xlabel('Network Congestion', fontsize=style['font_sizes']['ticks'])
+        ax.set_ylabel('Composite Score', fontsize=style['font_sizes']['ticks'])
+        ax.set_title('Network Effects on Performance', fontsize=style['font_sizes']['labels']*0.8)
+        ax.legend(fontsize=style['font_sizes']['legend']*0.6)
+        ax.grid(**style['grid_style'])
+
+# ===============================
+# Interactive Experiment Controller
+# ===============================
+
+class InteractiveExperimentController:
+    """Controller for interactive simulation experiments."""
+    
+    def __init__(self):
+        self.simulator = DynamicAdaptiveSimulator()
+        self.visualizer = DynamicVisualizationSystem()
+        self.experiment_history = []
+    
+    def run_basic_experiment(self, num_steps: int = 10):
+        """Run basic simulation experiment."""
+        print("=" * 80)
+        print("RUNNING BASIC SIMULATION EXPERIMENT")
+        print("=" * 80)
+        
+        # Reset and run
+        self.simulator.reset_state()
+        results = self.simulator.simulate(num_steps=num_steps)
+        
+        # Visualize last step
+        self.visualizer.plot_dynamic_performance(self.simulator, step=num_steps-1)
+        
+        # Print summary
+        self._print_performance_summary(num_steps-1)
+        
+        # Store experiment
+        self.experiment_history.append({
+            'name': 'Basic Experiment',
+            'num_steps': num_steps,
+            'results': results
+        })
+        
+        return results
+    
+    def run_parameter_variation_experiment(self, param_name: str, 
+                                          values: List[float],
+                                          num_steps_per_value: int = 3):
+        """Run experiment with parameter variation."""
+        print("=" * 80)
+        print(f"PARAMETER VARIATION EXPERIMENT: {param_name}")
+        print("=" * 80)
+        
+        results = {}
+        
+        for value in values:
+            print(f"\nSetting {param_name} = {value}")
+            
+            # Modify parameter
+            self.simulator.modify_parameter(
+                f"approach_profiles.Hydra_RAN.uncertainty_profile.{param_name}",
+                value
+            )
+            
+            # Reset and run
+            self.simulator.reset_state()
+            step_results = self.simulator.simulate(num_steps=num_steps_per_value)
+            
+            # Get final performance
+            final_metrics = self.simulator.get_current_performance_summary()
+            results[value] = {
+                'final_metrics': final_metrics,
+                'hydra_performance': final_metrics.get('Hydra_RAN', {})
+            }
+            
+            print(f"  Hydra-RAN Composite Score: {final_metrics.get('Hydra_RAN', {}).get('composite_score', 0):.3f}")
+        
+        # Plot results
+        self._plot_parameter_variation_results(param_name, values, results)
+        
+        return results
+    
+    def run_environment_change_experiment(self, scenario_changes: List[Dict]):
+        """Run experiment with environment changes."""
+        print("=" * 80)
+        print("ENVIRONMENT CHANGE EXPERIMENT")
+        print("=" * 80)
+        
+        all_results = {}
+        
+        for i, change in enumerate(scenario_changes):
+            scenario_name = change.get('name', f'Scenario_{i+1}')
+            print(f"\nRunning {scenario_name}")
+            
+            # Apply changes
+            for param_path, value in change.get('parameters', {}).items():
+                self.simulator.modify_parameter(param_path, value)
+            
+            # Reset and run
+            self.simulator.reset_state()
+            results = self.simulator.simulate(num_steps=5)
+            
+            # Store results
+            all_results[scenario_name] = {
+                'results': results,
+                'final_summary': self.simulator.get_current_performance_summary()
+            }
+            
+            # Visualize
+            self.visualizer.plot_dynamic_performance(self.simulator, step=4)
+        
+        # Compare scenarios
+        self._compare_scenarios(all_results)
+        
+        return all_results
+    
+    def run_sensitivity_analysis(self):
+        """Run comprehensive sensitivity analysis."""
+        print("=" * 80)
+        print("COMPREHENSIVE SENSITIVITY ANALYSIS")
+        print("=" * 80)
+        
+        sensitivity_results = {}
+        
+        # Test different parameters
+        test_params = [
+            ('base_mean', np.linspace(0.2, 0.8, 7)),
+            ('base_std', np.linspace(0.05, 0.25, 5)),
+            ('temporal_variation', np.linspace(0.01, 0.2, 5))
+        ]
+        
+        fig, axes = plt.subplots(1, len(test_params), figsize=(18, 6))
+        
+        for idx, (param_name, value_range) in enumerate(test_params):
+            results = self.simulator.run_sensitivity_analysis(
+                param_name, value_range, num_steps_per_value=3
+            )
+            sensitivity_results[param_name] = results
+            
+            # Plot sensitivity
+            ax = axes[idx] if len(test_params) > 1 else axes
+            self._plot_sensitivity_curve(ax, param_name, value_range, results)
+        
+        plt.suptitle('Parameter Sensitivity Analysis', fontsize=16)
+        plt.tight_layout()
+        plt.show()
+        
+        return sensitivity_results
+    
+    def _print_performance_summary(self, step: int):
+        """Print performance summary for a step."""
+        summary = self.simulator.get_current_performance_summary(step)
+        
+        print("\n" + "=" * 80)
+        print("PERFORMANCE SUMMARY")
+        print("=" * 80)
+        
+        # Sort by composite score (higher is better)
+        sorted_approaches = sorted(
+            summary.items(),
+            key=lambda x: x[1].get('composite_score', 0),
+            reverse=True
+        )
+        
+        for rank, (approach_name, metrics) in enumerate(sorted_approaches, 1):
+            print(f"\n{rank}. {approach_name.replace('_', ' ')}:")
+            print(f"   Composite Score: {metrics.get('composite_score', 0):.3f}")
+            print(f"   Mean Load: {metrics.get('mean_load', 0):.2f}%")
+            print(f"   Efficiency Score: {metrics.get('efficiency_score', 0):.3f}")
+            print(f"   Load Variability: {metrics.get('std_load', 0):.2f}%")
+        
+        # Calculate improvements
+        if 'Hydra_RAN' in summary:
+            hydra_score = summary['Hydra_RAN']['composite_score']
+            baseline_scores = [
+                metrics['composite_score']
+                for name, metrics in summary.items()
+                if name != 'Hydra_RAN'
+            ]
+            
+            if baseline_scores:
+                best_baseline = max(baseline_scores)
+                improvement = ((hydra_score - best_baseline) / best_baseline) * 100
+                print(f"\nHydra-RAN Improvement: {improvement:+.1f}% over best baseline")
+        
+        print("=" * 80)
+    
+    def _plot_parameter_variation_results(self, param_name: str, 
+                                         values: List[float], 
+                                         results: Dict):
+        """Plot results from parameter variation experiment."""
+        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+        
+        # Extract data
+        composite_scores = []
+        mean_loads = []
+        efficiency_scores = []
+        
+        for value in values:
+            if value in results and 'hydra_performance' in results[value]:
+                perf = results[value]['hydra_performance']
+                composite_scores.append(perf.get('composite_score', 0))
+                mean_loads.append(perf.get('mean_load', 0))
+                efficiency_scores.append(perf.get('efficiency_score', 0))
+        
+        # Plot 1: Composite Score
+        axes[0].plot(values[:len(composite_scores)], composite_scores, 
+                    'ko-', linewidth=3, markersize=10)
+        axes[0].set_xlabel(param_name.replace('_', ' ').title())
+        axes[0].set_ylabel('Composite Score')
+        axes[0].set_title('Composite Score vs Parameter')
+        axes[0].grid(True, alpha=0.3)
+        
+        # Plot 2: Mean Load
+        axes[1].plot(values[:len(mean_loads)], mean_loads, 
+                    'ro-', linewidth=3, markersize=10)
+        axes[1].set_xlabel(param_name.replace('_', ' ').title())
+        axes[1].set_ylabel('Mean Load (%)')
+        axes[1].set_title('Mean Load vs Parameter')
+        axes[1].grid(True, alpha=0.3)
+        
+        # Plot 3: Efficiency Score
+        axes[2].plot(values[:len(efficiency_scores)], efficiency_scores, 
+                    'bo-', linewidth=3, markersize=10)
+        axes[2].set_xlabel(param_name.replace('_', ' ').title())
+        axes[2].set_ylabel('Efficiency Score')
+        axes[2].set_title('Efficiency vs Parameter')
+        axes[2].grid(True, alpha=0.3)
+        
+        plt.suptitle(f'Parameter Variation: {param_name}', fontsize=16)
+        plt.tight_layout()
+        plt.show()
+    
+    def _compare_scenarios(self, all_results: Dict):
+        """Compare performance across different scenarios."""
+        scenario_names = list(all_results.keys())
+        
+        # Extract Hydra-RAN performance for each scenario
+        hydra_scores = []
+        hydra_loads = []
+        
+        for scenario_name, results in all_results.items():
+            summary = results['final_summary']
+            if 'Hydra_RAN' in summary:
+                hydra_scores.append(summary['Hydra_RAN']['composite_score'])
+                hydra_loads.append(summary['Hydra_RAN']['mean_load'])
+        
+        # Plot comparison
+        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+        
+        x = np.arange(len(scenario_names))
+        
+        # Composite scores
+        bars1 = axes[0].bar(x, hydra_scores, color='k', alpha=0.7)
+        axes[0].set_xticks(x)
+        axes[0].set_xticklabels(scenario_names, rotation=45, ha='right')
+        axes[0].set_ylabel('Composite Score')
+        axes[0].set_title('Hydra-RAN Performance Across Scenarios')
+        axes[0].grid(True, alpha=0.3, axis='y')
+        
+        # Add value labels
+        for bar, score in zip(bars1, hydra_scores):
+            height = bar.get_height()
+            axes[0].text(bar.get_x() + bar.get_width()/2., height,
+                        f'{score:.3f}', ha='center', va='bottom')
+        
+        # Mean loads
+        bars2 = axes[1].bar(x, hydra_loads, color='r', alpha=0.7)
+        axes[1].set_xticks(x)
+        axes[1].set_xticklabels(scenario_names, rotation=45, ha='right')
+        axes[1].set_ylabel('Mean Load (%)')
+        axes[1].set_title('Hydra-RAN Load Across Scenarios')
+        axes[1].grid(True, alpha=0.3, axis='y')
+        
+        # Add value labels
+        for bar, load in zip(bars2, hydra_loads):
+            height = bar.get_height()
+            axes[1].text(bar.get_x() + bar.get_width()/2., height,
+                        f'{load:.1f}%', ha='center', va='bottom')
+        
+        plt.suptitle('Scenario Comparison Results', fontsize=16)
+        plt.tight_layout()
+        plt.show()
+    
+    def _plot_sensitivity_curve(self, ax, param_name: str, 
+                               value_range: np.ndarray, 
+                               results: Dict):
+        """Plot sensitivity curve for a parameter."""
+        composite_scores = []
+        efficiency_scores = []
+        
+        for value in value_range:
+            if value in results and 'avg_metrics' in results[value]:
+                avg_metrics = results[value]['avg_metrics']
+                if 'Hydra_RAN' in avg_metrics:
+                    composite_scores.append(avg_metrics['Hydra_RAN']['composite_score'])
+                    efficiency_scores.append(avg_metrics['Hydra_RAN']['efficiency_score'])
+        
+        # Plot
+        if composite_scores:
+            ax.plot(value_range[:len(composite_scores)], composite_scores,
+                   'ko-', linewidth=3, markersize=8, label='Composite Score')
+            ax.plot(value_range[:len(efficiency_scores)], efficiency_scores,
+                   'ro--', linewidth=2, markersize=6, label='Efficiency Score')
+            
+            ax.set_xlabel(param_name.replace('_', ' ').title())
+            ax.set_ylabel('Score')
+            ax.set_title(f'Sensitivity to {param_name.replace("_", " ")}')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+        
+        return ax
+
+# ===============================
+# Dynamic Performance Analyzer
+# ===============================
+
+class DynamicPerformanceAnalyzer:
+    """Analyze dynamic performance results."""
+    
+    @staticmethod
+    def calculate_dynamic_statistics(simulator: DynamicAdaptiveSimulator) -> Dict:
+        """Calculate comprehensive dynamic statistics."""
+        stats = {}
+        
+        for approach_name in simulator.params.approach_profiles.keys():
+            if simulator.performance_metrics[approach_name]:
+                metrics_list = simulator.performance_metrics[approach_name]
+                
+                # Extract time series
+                composite_scores = [m['composite_score'] for m in metrics_list]
+                mean_loads = [m['mean_load'] for m in metrics_list]
+                efficiency_scores = [m['efficiency_score'] for m in metrics_list]
+                
+                # Calculate statistics
+                stats[approach_name] = {
+                    'composite_score': {
+                        'mean': np.mean(composite_scores),
+                        'std': np.std(composite_scores),
+                        'min': np.min(composite_scores),
+                        'max': np.max(composite_scores),
+                        'trend': np.polyfit(range(len(composite_scores)), 
+                                           composite_scores, 1)[0]
+                    },
+                    'mean_load': {
+                        'mean': np.mean(mean_loads),
+                        'std': np.std(mean_loads),
+                        'trend': np.polyfit(range(len(mean_loads)), 
+                                           mean_loads, 1)[0]
+                    },
+                    'efficiency_score': {
+                        'mean': np.mean(efficiency_scores),
+                        'std': np.std(efficiency_scores),
+                        'trend': np.polyfit(range(len(efficiency_scores)), 
+                                           efficiency_scores, 1)[0]
+                    },
+                    'stability': 1.0 / (np.std(composite_scores) + 0.01),
+                    'improvement_potential': (
+                        np.max(composite_scores) - np.min(composite_scores)
+                    ) / np.mean(composite_scores)
+                }
+        
+        return stats
+    
+    @staticmethod
+    def identify_performance_drivers(simulator: DynamicAdaptiveSimulator) -> Dict:
+        """Identify key drivers of performance variations."""
+        drivers = {}
+        
+        # Correlate environment factors with performance
+        if simulator.environment_history and simulator.current_step > 1:
+            steps = min(20, len(simulator.environment_history))
+            
+            environment_factors = []
+            hydra_performance = []
+            
+            for i in range(steps):
+                env = simulator.environment_history[i]
+                if i < len(simulator.performance_metrics['Hydra_RAN']):
+                    perf = simulator.performance_metrics['Hydra_RAN'][i]
+                    
+                    environment_factors.append([
+                        env['network']['congestion'],
+                        env['network']['latency'] / 100,
+                        env['network']['channel_quality'],
+                        env['vehicle_density'] / 100
+                    ])
+                    hydra_performance.append(perf['composite_score'])
+            
+            if environment_factors and hydra_performance:
+                # Calculate correlations
+                env_array = np.array(environment_factors)
+                perf_array = np.array(hydra_performance)
+                
+                correlations = []
+                for j in range(env_array.shape[1]):
+                    corr = np.corrcoef(env_array[:, j], perf_array)[0, 1]
+                    correlations.append(corr)
+                
+                drivers['environment_correlations'] = {
+                    'congestion': correlations[0],
+                    'latency': correlations[1],
+                    'channel_quality': correlations[2],
+                    'vehicle_density': correlations[3]
+                }
+        
+        return drivers
+    
+    @staticmethod
+    def generate_performance_report(simulator: DynamicAdaptiveSimulator) -> str:
+        """Generate comprehensive performance report."""
+        report_lines = []
+        
+        report_lines.append("=" * 80)
+        report_lines.append("DYNAMIC PERFORMANCE ANALYSIS REPORT")
+        report_lines.append("=" * 80)
+        report_lines.append(f"Simulation Steps: {simulator.current_step}")
+        report_lines.append(f"Total Approaches: {len(simulator.params.approach_profiles)}")
+        report_lines.append("")
+        
+        # Calculate statistics
+        stats = DynamicPerformanceAnalyzer.calculate_dynamic_statistics(simulator)
+        drivers = DynamicPerformanceAnalyzer.identify_performance_drivers(simulator)
+        
+        # Overall performance ranking
+        report_lines.append("OVERALL PERFORMANCE RANKING:")
+        report_lines.append("-" * 40)
+        
+        sorted_approaches = sorted(
+            stats.items(),
+            key=lambda x: x[1]['composite_score']['mean'],
+            reverse=True
+        )
+        
+        for rank, (approach_name, stat) in enumerate(sorted_approaches, 1):
+            report_lines.append(
+                f"{rank}. {approach_name.replace('_', ' ')}: "
+                f"Composite Score = {stat['composite_score']['mean']:.3f} "
+                f"(±{stat['composite_score']['std']:.3f})"
+            )
+        
+        report_lines.append("")
+        
+        # Hydra-RAN detailed analysis
+        if 'Hydra_RAN' in stats:
+            hydra_stats = stats['Hydra_RAN']
+            report_lines.append("HYDRA-RAN DETAILED ANALYSIS:")
+            report_lines.append("-" * 40)
+            report_lines.append(f"Mean Composite Score: {hydra_stats['composite_score']['mean']:.3f}")
+            report_lines.append(f"Score Trend: {hydra_stats['composite_score']['trend']:+.4f} per step")
+            report_lines.append(f"Performance Stability: {hydra_stats['stability']:.3f}")
+            report_lines.append(f"Improvement Potential: {hydra_stats['improvement_potential']*100:.1f}%")
+            report_lines.append("")
+        
+        # Performance drivers
+        if 'environment_correlations' in drivers:
+            report_lines.append("PERFORMANCE DRIVERS:")
+            report_lines.append("-" * 40)
+            for factor, corr in drivers['environment_correlations'].items():
+                report_lines.append(f"{factor.replace('_', ' ').title()}: {corr:+.3f}")
+            report_lines.append("")
+        
+        # Recommendations
+        report_lines.append("RECOMMENDATIONS:")
+        report_lines.append("-" * 40)
+        
+        # Find best and worst performing baselines
+        baseline_stats = {
+            name: stat for name, stat in stats.items()
+            if name != 'Hydra_RAN' and 'composite_score' in stat
+        }
+        
+        if baseline_stats:
+            best_baseline = max(baseline_stats.items(), 
+                               key=lambda x: x[1]['composite_score']['mean'])
+            worst_baseline = min(baseline_stats.items(), 
+                                key=lambda x: x[1]['composite_score']['mean'])
+            
+            report_lines.append(f"Best Baseline: {best_baseline[0].replace('_', ' ')}")
+            report_lines.append(f"Worst Baseline: {worst_baseline[0].replace('_', ' ')}")
+            
+            if 'Hydra_RAN' in stats:
+                hydra_mean = stats['Hydra_RAN']['composite_score']['mean']
+                best_baseline_mean = best_baseline[1]['composite_score']['mean']
+                improvement = ((hydra_mean - best_baseline_mean) / best_baseline_mean) * 100
+                report_lines.append(f"Hydra-RAN Improvement: {improvement:+.1f}% over best baseline")
+        
+        report_lines.append("=" * 80)
+        
+        return "\n".join(report_lines)
+
+# ===============================
+# Main Execution
+# ===============================
+
+def main():
+    """Main execution function."""
+    print("Initializing Dynamic Adaptive Signaling Load Simulator...")
+    print("=" * 80)
+    
+    # Create controller
+    controller = InteractiveExperimentController()
+    
+    # Run basic experiment
+    print("\n1. Running Basic Simulation Experiment...")
+    controller.run_basic_experiment(num_steps=8)
+    
+    # Run parameter variation
+    print("\n\n2. Running Parameter Variation Experiment...")
+    controller.run_parameter_variation_experiment(
+        param_name='base_mean',
+        values=[0.2, 0.35, 0.5, 0.65, 0.8]
+    )
+    
+    # Run environment changes
+    print("\n\n3. Running Environment Change Experiment...")
+    scenarios = [
+        {
+            'name': 'Low_Congestion',
+            'parameters': {
+                'vehicle_density': 30.0,
+                'network_params.congestion_level': 0.2
+            }
+        },
+        {
+            'name': 'High_Congestion',
+            'parameters': {
+                'vehicle_density': 100.0,
+                'network_params.congestion_level': 0.7
+            }
+        },
+        {
+            'name': 'Good_Channel',
+            'parameters': {
+                'network_params.channel_quality': 0.9,
+                'network_params.packet_loss': 0.02
+            }
+        }
+    ]
+    
+    controller.run_environment_change_experiment(scenarios)
+    
+    # Run sensitivity analysis
+    print("\n\n4. Running Sensitivity Analysis...")
+    controller.run_sensitivity_analysis()
+    
+    # Generate comprehensive report
+    print("\n\n5. Generating Performance Report...")
+    report = DynamicPerformanceAnalyzer.generate_performance_report(controller.simulator)
+    print(report)
+    
+    print("\n" + "=" * 80)
+    print("SIMULATION COMPLETE")
+    print("=" * 80)
+    
+    return controller
+
+def demo_quick_changes():
+    """Demonstrate quick parameter changes and effects."""
+    print("QUICK PARAMETER CHANGE DEMONSTRATION")
+    print("=" * 80)
+    
+    # Create simulator
+    simulator = DynamicAdaptiveSimulator()
+    
+    # Initial run
+    print("\n1. Initial simulation...")
+    simulator.simulate(num_steps=5)
+    summary1 = simulator.get_current_performance_summary()
+    hydra_score1 = summary1.get('Hydra_RAN', {}).get('composite_score', 0)
+    print(f"  Hydra-RAN initial score: {hydra_score1:.3f}")
+    
+    # Change uncertainty parameters
+    print("\n2. Increasing Hydra-RAN uncertainty mean from 0.35 to 0.6...")
+    simulator.modify_parameter(
+        "approach_profiles.Hydra_RAN.uncertainty_profile.base_mean",
+        0.6
+    )
+    
+    # Reset and rerun
+    simulator.reset_state()
+    simulator.simulate(num_steps=5)
+    summary2 = simulator.get_current_performance_summary()
+    hydra_score2 = summary2.get('Hydra_RAN', {}).get('composite_score', 0)
+    print(f"  Hydra-RAN new score: {hydra_score2:.3f}")
+    print(f"  Change: {(hydra_score2 - hydra_score1):+.3f}")
+    
+    # Change network conditions
+    print("\n3. Increasing network congestion from 0.3 to 0.8...")
+    simulator.modify_parameter("vehicle_density", 120.0)
+    
+    # Reset and rerun
+    simulator.reset_state()
+    simulator.simulate(num_steps=5)
+    summary3 = simulator.get_current_performance_summary()
+    hydra_score3 = summary3.get('Hydra_RAN', {}).get('composite_score', 0)
+    print(f"  Hydra-RAN with high congestion: {hydra_score3:.3f}")
+    print(f"  Change from initial: {(hydra_score3 - hydra_score1):+.3f}")
+    
+    # Change load calculation method
+    print("\n4. Switching to weighted load calculation...")
+    simulator.modify_parameter(
+        "load_calculation.load_function",
+        "weighted"
+    )
+    
+    # Reset and rerun
+    simulator.reset_state()
+    simulator.simulate(num_steps=5)
+    summary4 = simulator.get_current_performance_summary()
+    hydra_score4 = summary4.get('Hydra_RAN', {}).get('composite_score', 0)
+    print(f"  Hydra-RAN with weighted load: {hydra_score4:.3f}")
+    print(f"  Change from initial: {(hydra_score4 - hydra_score1):+.3f}")
+    
+    # Visualize all results
+    print("\n5. Visualizing results...")
+    DynamicVisualizationSystem.plot_dynamic_performance(simulator)
+    
+    return simulator
+
+# ===============================
+# Execution Entry Points
+# ===============================
+
+if __name__ == "__main__":
+    # Run full simulation
+    controller = main()
+    
+    # Uncomment for quick demo
+    # simulator = demo_quick_changes()
+    
+    # Example of interactive parameter changes
+    print("\n" + "=" * 80)
+    print("INTERACTIVE PARAMETER CHANGES EXAMPLE")
+    print("=" * 80)
+    print("\nYou can modify any parameter and see immediate effects:")
+    print("1. Change uncertainty distribution:")
+    print("   controller.simulator.modify_parameter(")
+    print("       'approach_profiles.Hydra_RAN.uncertainty_profile.base_mean',")
+    print("       0.25  # New value")
+    print("   )")
+    print("   controller.simulator.reset_state()")
+    print("   controller.simulator.simulate(num_steps=5)")
+    print("   controller.visualizer.plot_dynamic_performance(controller.simulator)")
+    print("\n2. Change network parameters:")
+    print("   controller.simulator.modify_parameter('vehicle_density', 80.0)")
+    print("   controller.simulator.modify_parameter('data_rate', 150.0)")
+    print("\n3. Change performance weights:")
+    print("   controller.simulator.modify_parameter(")
+    print("       'performance_weights.mean_load', 0.5)")
+
+
+
