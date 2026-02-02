@@ -4195,3 +4195,1702 @@ if __name__ == "__main__":
     print("  df = pd.DataFrame(simulator.performance_metrics).T")
     print("  df.to_csv('kd_performance_metrics.csv')")
 
+
+
+
+# Knowledge Distillation Gain (%) vs Training Epochs
+
+
+# -*- coding: utf-8 -*-
+"""
+Dynamic Parameter-Responsive Latency Simulation Framework
+End-to-End Latency vs Vehicle Density with Real-Time Parameter Dependencies
+
+Key Features:
+1. Fully responsive to all parameter changes
+2. Dynamic dependency graphs between parameters
+3. Real-time performance recalculation
+4. Interactive parameter exploration
+5. Comprehensive sensitivity analysis
+
+Author: Enhanced Dynamic Simulation Framework
+IEEE Transactions on Communications - Enhanced Version
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+import networkx as nx
+from dataclasses import dataclass, field, asdict
+from typing import Dict, List, Tuple, Optional, Callable, Any, Union
+from enum import Enum, auto
+import warnings
+warnings.filterwarnings('ignore')
+from scipy import stats
+import seaborn as sns
+from copy import deepcopy
+import json
+import ipywidgets as widgets
+from IPython.display import display, clear_output
+
+# ===============================
+# IEEE TCOM Global Style
+# ===============================
+plt.rcParams.update({
+    "font.family": "Times New Roman",
+    "axes.linewidth": 1.2,
+    "axes.edgecolor": "black",
+    "axes.facecolor": "white",
+    "figure.facecolor": "white",
+})
+
+# ===============================
+# Enhanced Data Structures
+# ===============================
+
+class TrafficPattern(Enum):
+    """Types of traffic patterns with dynamic characteristics."""
+    UNIFORM = auto()
+    BURSTY = auto()
+    CONVOY = auto()
+    PLATOON = auto()
+    RANDOM = auto()
+    SYNCHRONIZED = auto()
+    CHAOTIC = auto()
+
+class NetworkArchitecture(Enum):
+    """Types of network architectures with efficiency factors."""
+    CENTRALIZED = auto()
+    DISTRIBUTED = auto()
+    HYBRID = auto()
+    EDGE_FOG = auto()
+    CLOUD_EDGE = auto()
+    MESH = auto()
+    AD_HOC = auto()
+
+class CommunicationTechnology(Enum):
+    """Communication technologies with different characteristics."""
+    LTE = auto()
+    NR = auto()
+    V2X = auto()
+    DSRC = auto()
+    WIFI = auto()
+    SATELLITE = auto()
+    HYBRID = auto()
+
+@dataclass
+class ParameterDependency:
+    """Defines dependencies between parameters."""
+    source_param: str
+    target_param: str
+    influence_factor: float  # -1 to 1
+    function: Optional[Callable] = None
+    description: str = ""
+    
+    def apply_dependency(self, source_value: float, current_target: float) -> float:
+        """Apply dependency function."""
+        if self.function:
+            return self.function(source_value, current_target)
+        else:
+            return current_target * (1 + self.influence_factor * source_value)
+
+@dataclass
+class DynamicParameter:
+    """A parameter that can change and affect other parameters."""
+    name: str
+    value: float
+    min_value: float
+    max_value: float
+    default: float
+    unit: str = ""
+    category: str = ""
+    sensitivity_factor: float = 1.0  # How much it affects performance
+    dependencies: List[ParameterDependency] = field(default_factory=list)
+    affects: List[str] = field(default_factory=list)  # Parameters this affects
+    
+    def update(self, new_value: float) -> bool:
+        """Update parameter value with bounds checking."""
+        if self.min_value <= new_value <= self.max_value:
+            self.value = new_value
+            return True
+        return False
+
+@dataclass
+class DatasetProfile:
+    """Dynamic dataset characteristics with computed metrics."""
+    name: str = "urban_congested"
+    traffic_pattern: TrafficPattern = TrafficPattern.BURSTY
+    vehicle_density_range: Tuple[float, float] = (0.1, 1.0)
+    density_points: int = 20
+    average_speed: float = 30.0  # km/h
+    speed_variance: float = 10.0  # km/h
+    vehicle_spacing: float = 5.0  # meters
+    lane_count: int = 4
+    intersection_density: float = 0.8
+    traffic_light_frequency: float = 2.0
+    road_quality: float = 0.8  # 0-1
+    weather_conditions: float = 0.7  # 0-1 (1=clear)
+    time_of_day: float = 0.5  # 0-1 (0=night, 1=day)
+    
+    # Computed metrics
+    _density_array: np.ndarray = field(init=False, repr=False)
+    _computed_factors: Dict[str, float] = field(init=False, default_factory=dict)
+    
+    def __post_init__(self):
+        """Initialize computed properties."""
+        self._density_array = np.linspace(
+            self.vehicle_density_range[0],
+            self.vehicle_density_range[1],
+            self.density_points
+        )
+        self._compute_factors()
+    
+    def _compute_factors(self):
+        """Compute all traffic and environmental factors."""
+        # Congestion factor (0-1, higher = more congested)
+        congestion = 1 - (self.vehicle_spacing / 50.0)
+        
+        # Mobility factor (0-1, higher = more mobile)
+        mobility = self.average_speed / 120.0
+        
+        # Environmental factor (0-1, higher = better conditions)
+        environment = (self.road_quality * 0.4 + 
+                      self.weather_conditions * 0.3 + 
+                      self.time_of_day * 0.3)
+        
+        # Interaction intensity (0-1)
+        interaction = (1 / (self.vehicle_spacing + 1)) * self.lane_count * 0.2
+        
+        # Traffic pattern factor
+        pattern_factors = {
+            TrafficPattern.UNIFORM: 0.2,
+            TrafficPattern.BURSTY: 0.8,
+            TrafficPattern.CONVOY: 0.4,
+            TrafficPattern.PLATOON: 0.3,
+            TrafficPattern.RANDOM: 0.6,
+            TrafficPattern.SYNCHRONIZED: 0.1,
+            TrafficPattern.CHAOTIC: 0.9
+        }
+        pattern = pattern_factors.get(self.traffic_pattern, 0.5)
+        
+        self._computed_factors = {
+            'congestion_factor': congestion,
+            'mobility_factor': mobility,
+            'environment_factor': environment,
+            'interaction_intensity': interaction,
+            'pattern_complexity': pattern,
+            'network_demand': congestion * interaction * 0.5,
+            'communication_challenge': pattern * (1 - environment) * 0.7
+        }
+    
+    def update_parameter(self, param_name: str, value: float):
+        """Update a parameter and recompute factors."""
+        if hasattr(self, param_name):
+            setattr(self, param_name, value)
+            self._compute_factors()
+    
+    def get_density_array(self) -> np.ndarray:
+        """Get the vehicle density array."""
+        return self._density_array
+    
+    def get_factors(self) -> Dict[str, float]:
+        """Get computed traffic factors."""
+        return self._computed_factors.copy()
+
+@dataclass
+class NetworkConfiguration:
+    """Complete network configuration with dynamic parameters."""
+    # Architecture parameters
+    architecture: NetworkArchitecture = NetworkArchitecture.HYBRID
+    technology: CommunicationTechnology = CommunicationTechnology.NR
+    
+    # Infrastructure parameters
+    rsu_density: float = 0.5  # RSUs per km
+    base_station_density: float = 0.3  # BS per km
+    cloud_server_distance: float = 100.0  # km
+    edge_node_density: float = 0.4  # Edge nodes per km
+    
+    # Communication parameters
+    bandwidth: float = 100.0  # MHz
+    bandwidth_variance: float = 10.0  # MHz
+    transmission_power: float = 23.0  # dBm
+    path_loss_exponent: float = 3.5
+    interference_level: float = 0.2  # 0-1
+    packet_loss_rate: float = 0.01  # 0-1
+    
+    # Processing parameters
+    edge_compute_capacity: float = 10.0  # TFLOPs
+    vehicle_compute_capacity: float = 0.5  # TFLOPs
+    cloud_compute_capacity: float = 100.0  # TFLOPs
+    processing_efficiency: float = 0.8  # 0-1
+    
+    # Quality of Service parameters
+    reliability_threshold: float = 0.99  # 0-1
+    availability: float = 0.999  # 0-1
+    security_level: float = 0.8  # 0-1
+    
+    def compute_efficiency_factors(self) -> Dict[str, float]:
+        """Compute network efficiency factors."""
+        # Bandwidth efficiency (0-1)
+        bw_efficiency = min(self.bandwidth / 1000.0, 1.0)
+        
+        # Coverage efficiency
+        coverage = (self.rsu_density * 0.4 + 
+                   self.base_station_density * 0.3 + 
+                   self.edge_node_density * 0.3)
+        
+        # Compute efficiency
+        compute = (self.edge_compute_capacity * 0.5 + 
+                  self.vehicle_compute_capacity * 0.2 + 
+                  self.cloud_compute_capacity * 0.3) / 100.0
+        
+        # Reliability factor
+        reliability = (self.reliability_threshold * 0.4 + 
+                      self.availability * 0.3 + 
+                      self.security_level * 0.3)
+        
+        # Technology factor
+        tech_factors = {
+            CommunicationTechnology.LTE: 0.6,
+            CommunicationTechnology.NR: 0.9,
+            CommunicationTechnology.V2X: 0.8,
+            CommunicationTechnology.DSRC: 0.7,
+            CommunicationTechnology.WIFI: 0.5,
+            CommunicationTechnology.SATELLITE: 0.4,
+            CommunicationTechnology.HYBRID: 0.85
+        }
+        tech = tech_factors.get(self.technology, 0.7)
+        
+        # Architecture factor
+        arch_factors = {
+            NetworkArchitecture.CENTRALIZED: 0.5,
+            NetworkArchitecture.DISTRIBUTED: 0.7,
+            NetworkArchitecture.HYBRID: 0.85,
+            NetworkArchitecture.EDGE_FOG: 0.8,
+            NetworkArchitecture.CLOUD_EDGE: 0.75,
+            NetworkArchitecture.MESH: 0.6,
+            NetworkArchitecture.AD_HOC: 0.4
+        }
+        arch = arch_factors.get(self.architecture, 0.7)
+        
+        # Overall efficiency
+        overall = (bw_efficiency * 0.3 + coverage * 0.2 + compute * 0.2 + 
+                  reliability * 0.2 + tech * 0.05 + arch * 0.05)
+        
+        return {
+            'bandwidth_efficiency': bw_efficiency,
+            'coverage_efficiency': coverage,
+            'compute_efficiency': compute,
+            'reliability_factor': reliability,
+            'technology_factor': tech,
+            'architecture_factor': arch,
+            'overall_efficiency': overall,
+            'interference_impact': self.interference_level * 0.3,
+            'packet_loss_impact': self.packet_loss_rate * 0.2
+        }
+
+@dataclass
+class ApplicationProfile:
+    """Application requirements and characteristics."""
+    name: str = "safety_critical"
+    
+    # Timing requirements
+    sensing_update_rate: float = 100.0  # Hz
+    perception_processing_delay: float = 10.0  # ms
+    decision_making_delay: float = 5.0  # ms
+    control_update_rate: float = 50.0  # Hz
+    
+    # Quality requirements
+    accuracy_requirement: float = 0.99  # 0-1
+    reliability_requirement: float = 0.999  # 0-1
+    safety_critical_threshold: float = 20.0  # ms
+    
+    # Resource requirements
+    bandwidth_requirement: float = 10.0  # Mbps
+    compute_requirement: float = 1.0  # TFLOPs
+    memory_requirement: float = 2.0  # GB
+    
+    # Communication patterns
+    message_size_small: float = 0.1  # MB
+    message_size_medium: float = 1.0  # MB
+    message_size_large: float = 10.0  # MB
+    message_frequency: float = 100.0  # Hz
+    
+    def compute_requirements(self) -> Dict[str, float]:
+        """Compute application requirements metrics."""
+        # Latency budget
+        total_latency_budget = (
+            1000 / self.sensing_update_rate + 
+            self.perception_processing_delay + 
+            self.decision_making_delay + 
+            1000 / self.control_update_rate
+        )
+        
+        # Network demand
+        network_demand = (
+            self.message_frequency * 
+            (self.message_size_small * 0.1 + 
+             self.message_size_medium * 0.3 + 
+             self.message_size_large * 0.6)
+        )
+        
+        # Compute demand
+        compute_demand = self.compute_requirement * self.message_frequency / 1000.0
+        
+        # Criticality factor
+        criticality = 1.0 / (self.safety_critical_threshold / 100.0)
+        
+        return {
+            'total_latency_budget': total_latency_budget,
+            'network_demand_mbps': network_demand,
+            'compute_demand_tflops': compute_demand,
+            'criticality_factor': criticality,
+            'stringency_index': (criticality * 0.4 + 
+                                self.accuracy_requirement * 0.3 + 
+                                self.reliability_requirement * 0.3),
+            'update_cycle_ms': 1000 / self.sensing_update_rate,
+            'control_cycle_ms': 1000 / self.control_update_rate
+        }
+
+@dataclass
+class ApproachModel:
+    """Mathematical model for each approach's performance."""
+    name: str
+    base_model: Callable  # Function that computes base latency
+    
+    # Model parameters
+    parameters: Dict[str, float] = field(default_factory=lambda: {
+        'base_latency': 30.0,
+        'congestion_sensitivity': 1.0,
+        'efficiency_factor': 1.0,
+        'scaling_exponent': 2.0,
+        'adaptive_gain': 0.0,
+        'learning_rate': 0.1
+    })
+    
+    # Enhancement functions
+    enhancement_functions: Dict[str, Callable] = field(default_factory=dict)
+    
+    # Dependencies on external factors
+    factor_weights: Dict[str, float] = field(default_factory=lambda: {
+        'congestion_factor': 0.3,
+        'network_efficiency': 0.25,
+        'application_stringency': 0.2,
+        'environment_factor': 0.15,
+        'technology_factor': 0.1
+    })
+    
+    def compute_latency(
+        self,
+        density: np.ndarray,
+        dataset_factors: Dict[str, float],
+        network_factors: Dict[str, float],
+        app_requirements: Dict[str, float]
+    ) -> np.ndarray:
+        """Compute latency using the full model."""
+        # Base latency calculation
+        base = self.base_model(density, self.parameters)
+        
+        # Apply factor-weighted adjustments
+        adjustments = []
+        
+        # Congestion adjustment
+        congestion_adj = (1 + dataset_factors['congestion_factor'] * 
+                         self.factor_weights['congestion_factor'])
+        adjustments.append(congestion_adj)
+        
+        # Network efficiency adjustment
+        network_adj = (1 - network_factors['overall_efficiency'] * 
+                      self.factor_weights['network_efficiency'])
+        adjustments.append(network_adj)
+        
+        # Application stringency adjustment
+        app_adj = (1 + app_requirements['stringency_index'] * 
+                  self.factor_weights['application_stringency'])
+        adjustments.append(app_adj)
+        
+        # Environment adjustment
+        env_adj = (1 - dataset_factors['environment_factor'] * 
+                  self.factor_weights['environment_factor'])
+        adjustments.append(env_adj)
+        
+        # Technology adjustment
+        tech_adj = (1 - network_factors['technology_factor'] * 
+                   self.factor_weights['technology_factor'])
+        adjustments.append(tech_adj)
+        
+        # Combine all adjustments
+        total_adjustment = np.prod(adjustments, axis=0) if isinstance(adjustments[0], np.ndarray) else np.prod(adjustments)
+        
+        # Apply enhancements if any
+        if self.enhancement_functions:
+            for func_name, func in self.enhancement_functions.items():
+                base = func(base, density, self.parameters)
+        
+        # Final latency with bounds
+        latency = base * total_adjustment
+        return np.clip(latency, self.parameters['base_latency'] * 0.5, 1000)
+
+# ===============================
+# Dynamic Simulation Core
+# ===============================
+
+class DynamicParameterSystem:
+    """Manages parameter dependencies and propagation."""
+    
+    def __init__(self):
+        self.parameters: Dict[str, DynamicParameter] = {}
+        self.dependency_graph = nx.DiGraph()
+        self.change_history = []
+        
+    def add_parameter(self, param: DynamicParameter):
+        """Add a parameter to the system."""
+        self.parameters[param.name] = param
+        self.dependency_graph.add_node(param.name)
+        
+        # Add dependencies
+        for dep in param.dependencies:
+            self.dependency_graph.add_edge(dep.source_param, param.name, 
+                                          weight=dep.influence_factor,
+                                          function=dep.function)
+    
+    def update_parameter(self, param_name: str, new_value: float) -> bool:
+        """Update a parameter and propagate changes."""
+        if param_name not in self.parameters:
+            return False
+        
+        param = self.parameters[param_name]
+        if not param.update(new_value):
+            return False
+        
+        # Record change
+        self.change_history.append({
+            'parameter': param_name,
+            'old_value': param.value,
+            'new_value': new_value,
+            'timestamp': len(self.change_history)
+        })
+        
+        # Propagate changes through dependency graph
+        affected_params = self._propagate_changes(param_name)
+        
+        return True
+    
+    def _propagate_changes(self, changed_param: str) -> List[str]:
+        """Propagate changes through the dependency graph."""
+        affected = []
+        
+        # Get all nodes reachable from changed parameter
+        for target in nx.dfs_preorder_nodes(self.dependency_graph, changed_param):
+            if target == changed_param:
+                continue
+            
+            # Get all paths from changed_param to target
+            try:
+                # Apply dependencies along each path
+                for path in nx.all_simple_paths(self.dependency_graph, changed_param, target):
+                    current_value = self.parameters[target].value
+                    
+                    for i in range(len(path) - 1):
+                        source = path[i]
+                        dest = path[i + 1]
+                        
+                        edge_data = self.dependency_graph.get_edge_data(source, dest)
+                        if edge_data:
+                            dep_func = edge_data.get('function')
+                            if dep_func:
+                                current_value = dep_func(
+                                    self.parameters[source].value,
+                                    current_value
+                                )
+                            else:
+                                influence = edge_data.get('weight', 0)
+                                current_value *= (1 + influence * 
+                                                self.parameters[source].value)
+                    
+                    # Update the target parameter
+                    self.parameters[target].update(current_value)
+                    affected.append(target)
+                    
+            except nx.NetworkXNoPath:
+                continue
+        
+        return affected
+
+class DynamicLatencySimulator:
+    """Main simulator with fully dynamic parameter response."""
+    
+    def __init__(self):
+        # Core components
+        self.dataset = DatasetProfile()
+        self.network = NetworkConfiguration()
+        self.application = ApplicationProfile()
+        self.param_system = DynamicParameterSystem()
+        
+        # Approach models
+        self.approaches: Dict[str, ApproachModel] = {}
+        self.results: Dict[str, Dict[str, Any]] = {}
+        
+        # Performance metrics
+        self.metrics: Dict[str, Dict[str, float]] = {}
+        
+        # Initialize parameter system
+        self._initialize_parameter_system()
+        
+        # Initialize approaches
+        self._initialize_approaches()
+    
+    def _initialize_parameter_system(self):
+        """Initialize the dynamic parameter system."""
+        # Define core parameters
+        core_params = [
+            DynamicParameter(
+                name="vehicle_density",
+                value=0.5,
+                min_value=0.1,
+                max_value=1.0,
+                default=0.5,
+                unit="normalized",
+                category="traffic"
+            ),
+            DynamicParameter(
+                name="bandwidth",
+                value=100.0,
+                min_value=10.0,
+                max_value=1000.0,
+                default=100.0,
+                unit="MHz",
+                category="network"
+            ),
+            DynamicParameter(
+                name="compute_capacity",
+                value=10.0,
+                min_value=0.1,
+                max_value=100.0,
+                default=10.0,
+                unit="TFLOPs",
+                category="compute"
+            ),
+            DynamicParameter(
+                name="sensing_rate",
+                value=100.0,
+                min_value=1.0,
+                max_value=1000.0,
+                default=100.0,
+                unit="Hz",
+                category="application"
+            )
+        ]
+        
+        # Add parameters to system
+        for param in core_params:
+            self.param_system.add_parameter(param)
+        
+        # Define dependencies
+        dependencies = [
+            ParameterDependency(
+                source_param="vehicle_density",
+                target_param="network_demand",
+                influence_factor=0.8,
+                function=lambda density, demand: demand * (1 + density * 0.5)
+            ),
+            ParameterDependency(
+                source_param="bandwidth",
+                target_param="network_efficiency",
+                influence_factor=0.6,
+                function=lambda bw, efficiency: efficiency * (1 + np.log10(bw/10) * 0.1)
+            ),
+            ParameterDependency(
+                source_param="compute_capacity",
+                target_param="processing_delay",
+                influence_factor=-0.7,
+                function=lambda compute, delay: delay * (1 - np.log10(compute/0.1) * 0.15)
+            )
+        ]
+        
+        # Add dependency parameters
+        for dep in dependencies:
+            if dep.target_param not in self.param_system.parameters:
+                target_param = DynamicParameter(
+                    name=dep.target_param,
+                    value=1.0,
+                    min_value=0.0,
+                    max_value=10.0,
+                    default=1.0,
+                    unit="factor",
+                    category="derived"
+                )
+                self.param_system.add_parameter(target_param)
+            
+            self.param_system.dependency_graph.add_edge(
+                dep.source_param,
+                dep.target_param,
+                weight=dep.influence_factor,
+                function=dep.function
+            )
+    
+    def _initialize_approaches(self):
+        """Initialize all approach models."""
+        
+        # Helper functions for different approaches
+        def exponential_latency(density, params):
+            base = params['base_latency']
+            sensitivity = params['congestion_sensitivity']
+            return base * (1 + sensitivity * density ** params['scaling_exponent'])
+        
+        def adaptive_latency(density, params):
+            base = params['base_latency']
+            # Adaptive model that reduces growth at higher densities
+            growth = params['congestion_sensitivity'] * density
+            adaptive_term = params['adaptive_gain'] * np.exp(-params['learning_rate'] * density)
+            return base * (1 + growth - adaptive_term)
+        
+        def hybrid_latency(density, params):
+            # Combination of linear and saturation
+            linear = params['base_latency'] * (1 + 0.5 * density)
+            saturation = 100 / (1 + np.exp(-10 * (density - 0.5)))
+            return np.maximum(linear, saturation) * params['efficiency_factor']
+        
+        # Define enhancement functions
+        def compression_enhancement(latency, density, params):
+            compression_ratio = params.get('compression_ratio', 0.5)
+            return latency * (1 - compression_ratio * 0.3)
+        
+        def load_balancing_enhancement(latency, density, params):
+            load_balance_gain = params.get('load_balance_gain', 0.2)
+            return latency * (1 - load_balance_gain * density)
+        
+        # Create approach models
+        self.approaches = {
+            'Cooperative_Perception': ApproachModel(
+                name='Cooperative Perception',
+                base_model=exponential_latency,
+                parameters={
+                    'base_latency': 41.0,
+                    'congestion_sensitivity': 3.5,
+                    'efficiency_factor': 0.7,
+                    'scaling_exponent': 2.0,
+                    'adaptive_gain': 0.0,
+                    'learning_rate': 0.0
+                },
+                factor_weights={
+                    'congestion_factor': 0.4,
+                    'network_efficiency': 0.2,
+                    'application_stringency': 0.2,
+                    'environment_factor': 0.1,
+                    'technology_factor': 0.1
+                }
+            ),
+            'V2X_ViTv2': ApproachModel(
+                name='V2X-ViTv2',
+                base_model=hybrid_latency,
+                parameters={
+                    'base_latency': 41.0,
+                    'congestion_sensitivity': 3.0,
+                    'efficiency_factor': 0.8,
+                    'scaling_exponent': 1.8,
+                    'adaptive_gain': 0.5,
+                    'learning_rate': 2.0,
+                    'compression_ratio': 0.3
+                },
+                enhancement_functions={'compression': compression_enhancement},
+                factor_weights={
+                    'congestion_factor': 0.3,
+                    'network_efficiency': 0.25,
+                    'application_stringency': 0.25,
+                    'environment_factor': 0.1,
+                    'technology_factor': 0.1
+                }
+            ),
+            'Semantic_Communication': ApproachModel(
+                name='Semantic Communication',
+                base_model=exponential_latency,
+                parameters={
+                    'base_latency': 34.0,
+                    'congestion_sensitivity': 2.2,
+                    'efficiency_factor': 0.85,
+                    'scaling_exponent': 1.5,
+                    'adaptive_gain': 0.3,
+                    'learning_rate': 1.5,
+                    'compression_ratio': 0.6
+                },
+                enhancement_functions={'compression': compression_enhancement},
+                factor_weights={
+                    'congestion_factor': 0.25,
+                    'network_efficiency': 0.3,
+                    'application_stringency': 0.25,
+                    'environment_factor': 0.1,
+                    'technology_factor': 0.1
+                }
+            ),
+            'Task_Oriented': ApproachModel(
+                name='Task-Oriented',
+                base_model=adaptive_latency,
+                parameters={
+                    'base_latency': 34.0,
+                    'congestion_sensitivity': 1.9,
+                    'efficiency_factor': 0.9,
+                    'scaling_exponent': 1.3,
+                    'adaptive_gain': 0.8,
+                    'learning_rate': 3.0,
+                    'load_balance_gain': 0.2
+                },
+                enhancement_functions={'load_balancing': load_balancing_enhancement},
+                factor_weights={
+                    'congestion_factor': 0.2,
+                    'network_efficiency': 0.3,
+                    'application_stringency': 0.3,
+                    'environment_factor': 0.1,
+                    'technology_factor': 0.1
+                }
+            ),
+            'Hydra_RAN': ApproachModel(
+                name='Hydra-RAN (Goal-Oriented)',
+                base_model=adaptive_latency,
+                parameters={
+                    'base_latency': 28.0,
+                    'congestion_sensitivity': 1.2,
+                    'efficiency_factor': 0.95,
+                    'scaling_exponent': 1.1,
+                    'adaptive_gain': 2.0,
+                    'learning_rate': 5.0,
+                    'compression_ratio': 0.8,
+                    'load_balance_gain': 0.4,
+                    'prediction_gain': 0.3
+                },
+                enhancement_functions={
+                    'compression': compression_enhancement,
+                    'load_balancing': load_balancing_enhancement,
+                    'prediction': lambda lat, den, params: lat * (1 - params.get('prediction_gain', 0) * 0.2)
+                },
+                factor_weights={
+                    'congestion_factor': 0.15,
+                    'network_efficiency': 0.35,
+                    'application_stringency': 0.3,
+                    'environment_factor': 0.1,
+                    'technology_factor': 0.1
+                }
+            )
+        }
+    
+    def update_parameter(self, param_path: str, new_value: float) -> Dict[str, Any]:
+        """
+        Update any parameter in the system and trigger recalculation.
+        
+        Args:
+            param_path: Path to parameter (e.g., "dataset.average_speed")
+            new_value: New parameter value
+        
+        Returns:
+            Dictionary with update results
+        """
+        update_result = {
+            'success': False,
+            'affected_parameters': [],
+            'performance_changes': {}
+        }
+        
+        # Parse parameter path
+        parts = param_path.split('.')
+        
+        try:
+            if len(parts) == 1:
+                # Direct parameter in param system
+                success = self.param_system.update_parameter(parts[0], new_value)
+                update_result['success'] = success
+                if success:
+                    update_result['affected_parameters'] = self.param_system._propagate_changes(parts[0])
+            elif len(parts) == 2:
+                # Component parameter
+                component, param = parts
+                if component == 'dataset' and hasattr(self.dataset, param):
+                    old_value = getattr(self.dataset, param)
+                    self.dataset.update_parameter(param, new_value)
+                    update_result['success'] = True
+                    update_result['affected_parameters'] = ['dataset_factors']
+                elif component == 'network' and hasattr(self.network, param):
+                    setattr(self.network, param, new_value)
+                    update_result['success'] = True
+                    update_result['affected_parameters'] = ['network_factors']
+                elif component == 'application' and hasattr(self.application, param):
+                    setattr(self.application, param, new_value)
+                    update_result['success'] = True
+                    update_result['affected_parameters'] = ['app_requirements']
+                elif component == 'approach':
+                    # Update approach parameter
+                    approach_name, approach_param = param.split('.')
+                    if approach_name in self.approaches:
+                        self.approaches[approach_name].parameters[approach_param] = new_value
+                        update_result['success'] = True
+                        update_result['affected_parameters'] = [f'approach.{approach_name}']
+            
+            # Recalculate performance if any parameters changed
+            if update_result['success']:
+                self.run_simulation()
+                update_result['performance_changes'] = self._calculate_performance_changes()
+                
+        except Exception as e:
+            update_result['error'] = str(e)
+        
+        return update_result
+    
+    def run_simulation(self):
+        """Run simulation with current parameters."""
+        # Get current factors
+        density = self.dataset.get_density_array()
+        dataset_factors = self.dataset.get_factors()
+        network_factors = self.network.compute_efficiency_factors()
+        app_requirements = self.application.compute_requirements()
+        
+        # Calculate latency for each approach
+        self.results = {}
+        for name, model in self.approaches.items():
+            latency = model.compute_latency(
+                density, dataset_factors, network_factors, app_requirements
+            )
+            
+            # Calculate performance metrics
+            metrics = self._calculate_metrics(name, latency, density)
+            
+            self.results[name] = {
+                'latency': latency,
+                'density': density,
+                'metrics': metrics,
+                'model': model
+            }
+        
+        # Update overall metrics
+        self.metrics = self._calculate_overall_metrics()
+    
+    def _calculate_metrics(self, approach_name: str, latency: np.ndarray, density: np.ndarray) -> Dict[str, float]:
+        """Calculate comprehensive performance metrics."""
+        safety_threshold = self.application.safety_critical_threshold
+        
+        # Basic statistics
+        metrics = {
+            'average_latency': np.mean(latency),
+            'median_latency': np.median(latency),
+            'max_latency': np.max(latency),
+            'min_latency': np.min(latency),
+            'std_latency': np.std(latency),
+            'latency_growth': (latency[-1] - latency[0]) / latency[0] * 100,
+            'latency_variability': np.std(np.diff(latency)),
+        }
+        
+        # Threshold-based metrics
+        metrics.update({
+            'safety_compliance_rate': np.mean(latency <= safety_threshold) * 100,
+            'density_at_safety_threshold': self._find_threshold_density(density, latency, safety_threshold),
+            'density_at_20ms': self._find_threshold_density(density, latency, 20),
+            'density_at_100ms': self._find_threshold_density(density, latency, 100),
+            'worst_case_latency': np.percentile(latency, 95),
+            'best_case_latency': np.percentile(latency, 5),
+        })
+        
+        # Efficiency metrics
+        latency_area = np.trapz(latency, density)
+        ideal_area = np.trapz(np.full_like(latency, latency[0]), density)
+        metrics['efficiency_score'] = (1 - latency_area / (ideal_area * 10)) * 100
+        
+        return metrics
+    
+    def _find_threshold_density(self, density: np.ndarray, latency: np.ndarray, threshold: float) -> float:
+        """Find density at which latency exceeds threshold."""
+        idx = np.where(latency > threshold)[0]
+        if len(idx) > 0:
+            return float(density[idx[0]])
+        return float(density[-1])
+    
+    def _calculate_overall_metrics(self) -> Dict[str, Dict[str, float]]:
+        """Calculate overall performance metrics across all approaches."""
+        overall = {}
+        
+        for name, result in self.results.items():
+            overall[name] = result['metrics']
+        
+        # Comparative metrics
+        if len(self.results) > 1:
+            best_latency = min(overall.values(), key=lambda x: x['average_latency'])
+            worst_latency = max(overall.values(), key=lambda x: x['average_latency'])
+            
+            overall['comparative'] = {
+                'best_approach': min(overall.items(), key=lambda x: x[1]['average_latency'])[0],
+                'worst_approach': max(overall.items(), key=lambda x: x[1]['average_latency'])[0],
+                'latency_range': worst_latency['average_latency'] - best_latency['average_latency'],
+                'improvement_over_worst': (
+                    (worst_latency['average_latency'] - best_latency['average_latency']) / 
+                    worst_latency['average_latency'] * 100
+                )
+            }
+        
+        return overall
+    
+    def _calculate_performance_changes(self) -> Dict[str, Dict[str, float]]:
+        """Calculate performance changes after parameter update."""
+        # This would compare with previous results
+        # For simplicity, return current metrics
+        return {name: data['metrics'] for name, data in self.results.items()}
+    
+    def get_sensitivity_matrix(self) -> pd.DataFrame:
+        """Calculate sensitivity of performance to parameter changes."""
+        # Store current state
+        original_state = {
+            'dataset': deepcopy(self.dataset),
+            'network': deepcopy(self.network),
+            'application': deepcopy(self.application),
+            'approaches': deepcopy(self.approaches)
+        }
+        
+        # Define parameters to test
+        test_params = [
+            ('dataset.average_speed', 30, 100),
+            ('dataset.vehicle_spacing', 2, 50),
+            ('network.bandwidth', 10, 1000),
+            ('network.compute_capacity', 1, 100),
+            ('application.sensing_update_rate', 10, 1000)
+        ]
+        
+        sensitivity_data = []
+        
+        for param_path, min_val, max_val in test_params:
+            # Test multiple values
+            test_values = np.linspace(min_val, max_val, 5)
+            
+            for value in test_values:
+                # Update parameter
+                self.update_parameter(param_path, value)
+                
+                # Record performance
+                for approach_name, result in self.results.items():
+                    sensitivity_data.append({
+                        'parameter': param_path,
+                        'value': value,
+                        'approach': approach_name,
+                        'average_latency': result['metrics']['average_latency'],
+                        'safety_compliance': result['metrics']['safety_compliance_rate']
+                    })
+        
+        # Restore original state
+        self.dataset = original_state['dataset']
+        self.network = original_state['network']
+        self.application = original_state['application']
+        self.approaches = original_state['approaches']
+        self.run_simulation()
+        
+        return pd.DataFrame(sensitivity_data)
+    
+    def plot_results(self, save_path: Optional[str] = None):
+        """Create comprehensive visualization of results."""
+        fig = plt.figure(figsize=(20, 12))
+        
+        # Create subplots
+        gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3)
+        
+        # Plot 1: Latency vs Density
+        ax1 = fig.add_subplot(gs[0, :2])
+        self._plot_latency_curves(ax1)
+        
+        # Plot 2: Performance Comparison (Bar chart)
+        ax2 = fig.add_subplot(gs[0, 2])
+        self._plot_performance_bars(ax2)
+        
+        # Plot 3: Parameter Sensitivity
+        ax3 = fig.add_subplot(gs[1, 0])
+        self._plot_sensitivity_heatmap(ax3)
+        
+        # Plot 4: Threshold Analysis
+        ax4 = fig.add_subplot(gs[1, 1])
+        self._plot_threshold_analysis(ax4)
+        
+        # Plot 5: Efficiency Metrics
+        ax5 = fig.add_subplot(gs[1, 2])
+        self._plot_efficiency_radar(ax5)
+        
+        # Plot 6: Current Parameter State
+        ax6 = fig.add_subplot(gs[2, 0])
+        self._plot_parameter_state(ax6)
+        
+        # Plot 7: Performance Distribution
+        ax7 = fig.add_subplot(gs[2, 1])
+        self._plot_performance_distribution(ax7)
+        
+        # Plot 8: Improvement Analysis
+        ax8 = fig.add_subplot(gs[2, 2])
+        self._plot_improvement_analysis(ax8)
+        
+        plt.suptitle(
+            f"Dynamic Latency Simulation Results\n"
+            f"Scenario: {self.dataset.name} | "
+            f"Network: {self.network.architecture.name} | "
+            f"Application: {self.application.name}",
+            fontsize=16,
+            fontweight='bold'
+        )
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        
+        plt.show()
+    
+    def _plot_latency_curves(self, ax):
+        """Plot latency vs density curves."""
+        colors = plt.cm.tab10(np.linspace(0, 1, len(self.results)))
+        
+        for (name, result), color in zip(self.results.items(), colors):
+            ax.plot(
+                result['density'],
+                result['latency'],
+                label=name,
+                linewidth=3 if 'Hydra' in name else 2,
+                color=color,
+                alpha=0.8
+            )
+        
+        # Add safety threshold
+        safety_threshold = self.application.safety_critical_threshold
+        ax.axhline(
+            y=safety_threshold,
+            color='red',
+            linestyle='--',
+            alpha=0.5,
+            label=f'Safety Threshold ({safety_threshold} ms)'
+        )
+        
+        ax.set_xlabel('Vehicle Density (Normalized)')
+        ax.set_ylabel('End-to-End Latency (ms)')
+        ax.set_title('Latency vs Vehicle Density')
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=8, loc='upper left')
+    
+    def _plot_performance_bars(self, ax):
+        """Plot performance comparison bar chart."""
+        approaches = list(self.results.keys())
+        avg_latencies = [self.results[name]['metrics']['average_latency'] for name in approaches]
+        
+        colors = ['red' if 'Hydra' in name else 'blue' for name in approaches]
+        
+        bars = ax.barh(approaches, avg_latencies, color=colors, alpha=0.7)
+        ax.set_xlabel('Average Latency (ms)')
+        ax.set_title('Performance Comparison')
+        ax.grid(True, alpha=0.3, axis='x')
+        
+        # Add value labels
+        for bar, lat in zip(bars, avg_latencies):
+            ax.text(
+                bar.get_width() + 1,
+                bar.get_y() + bar.get_height()/2,
+                f'{lat:.1f}',
+                va='center',
+                fontsize=9
+            )
+    
+    def _plot_sensitivity_heatmap(self, ax):
+        """Plot parameter sensitivity heatmap."""
+        sensitivity_df = self.get_sensitivity_matrix()
+        
+        if not sensitivity_df.empty:
+            # Pivot for heatmap
+            pivot_df = sensitivity_df.pivot_table(
+                index='parameter',
+                columns='approach',
+                values='average_latency',
+                aggfunc='mean'
+            )
+            
+            # Normalize
+            normalized = (pivot_df - pivot_df.min()) / (pivot_df.max() - pivot_df.min())
+            
+            im = ax.imshow(normalized.values, cmap='viridis', aspect='auto')
+            ax.set_xticks(range(len(normalized.columns)))
+            ax.set_xticklabels(normalized.columns, rotation=45, ha='right')
+            ax.set_yticks(range(len(normalized.index)))
+            ax.set_yticklabels([p.split('.')[-1] for p in normalized.index])
+            
+            ax.set_title('Parameter Sensitivity')
+            plt.colorbar(im, ax=ax, label='Normalized Latency Impact')
+    
+    def _plot_threshold_analysis(self, ax):
+        """Plot density at which thresholds are exceeded."""
+        thresholds = [20, 50, 100, self.application.safety_critical_threshold]
+        approaches = list(self.results.keys())
+        
+        data = []
+        for threshold in thresholds:
+            row = []
+            for approach in approaches:
+                metric_name = f'density_at_{int(threshold)}ms' if threshold != self.application.safety_critical_threshold else 'density_at_safety_threshold'
+                if metric_name in self.results[approach]['metrics']:
+                    row.append(self.results[approach]['metrics'][metric_name])
+                else:
+                    row.append(0)
+            data.append(row)
+        
+        x = np.arange(len(approaches))
+        width = 0.2
+        
+        for i, (threshold, row) in enumerate(zip(thresholds, data)):
+            offset = (i - len(thresholds)/2) * width
+            ax.bar(x + offset, row, width, label=f'{threshold} ms')
+        
+        ax.set_xlabel('Approach')
+        ax.set_ylabel('Density at Threshold')
+        ax.set_title('Threshold Exceedance Analysis')
+        ax.set_xticks(x)
+        ax.set_xticklabels([a[:10] for a in approaches], rotation=45)
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3, axis='y')
+    
+    def _plot_efficiency_radar(self, ax):
+        """Plot radar chart of efficiency metrics."""
+        if not self.results:
+            return
+        
+        # Select metrics for radar chart
+        metrics_to_plot = ['efficiency_score', 'safety_compliance_rate', 
+                          'latency_growth', 'latency_variability']
+        
+        approaches = list(self.results.keys())
+        num_vars = len(metrics_to_plot)
+        
+        # Compute angles
+        angles = np.linspace(0, 2 * np.pi, num_vars, endpoint=False).tolist()
+        angles += angles[:1]  # Close the loop
+        
+        for approach in approaches:
+            values = []
+            for metric in metrics_to_plot:
+                if metric in self.results[approach]['metrics']:
+                    # Normalize values
+                    val = self.results[approach]['metrics'][metric]
+                    # Different normalization for different metrics
+                    if metric in ['efficiency_score', 'safety_compliance_rate']:
+                        values.append(val / 100)
+                    elif metric == 'latency_growth':
+                        values.append(1 - min(val / 500, 1))
+                    else:
+                        values.append(1 - min(val / 50, 1))
+                else:
+                    values.append(0)
+            
+            values += values[:1]  # Close the loop
+            
+            ax.plot(angles, values, 'o-', linewidth=2, label=approach[:15])
+            ax.fill(angles, values, alpha=0.1)
+        
+        ax.set_xticks(angles[:-1])
+        ax.set_xticklabels([m.replace('_', '\n') for m in metrics_to_plot])
+        ax.set_title('Efficiency Radar Chart')
+        ax.legend(fontsize=7, loc='upper right', bbox_to_anchor=(1.3, 1.0))
+    
+    def _plot_parameter_state(self, ax):
+        """Plot current parameter state."""
+        # Gather current parameters
+        params = {
+            'Vehicle Speed': self.dataset.average_speed,
+            'Vehicle Spacing': self.dataset.vehicle_spacing,
+            'Bandwidth': self.network.bandwidth,
+            'Compute Capacity': self.network.edge_compute_capacity,
+            'Sensing Rate': self.application.sensing_update_rate
+        }
+        
+        names = list(params.keys())
+        values = list(params.values())
+        
+        # Normalize for visualization
+        max_vals = [120, 50, 1000, 100, 1000]  # Max possible values
+        normalized = [v/max_v for v, max_v in zip(values, max_vals)]
+        
+        ax.barh(names, normalized, color='steelblue', alpha=0.7)
+        ax.set_xlabel('Normalized Value')
+        ax.set_title('Current Parameter State')
+        ax.set_xlim(0, 1)
+        ax.grid(True, alpha=0.3, axis='x')
+        
+        # Add actual values
+        for i, (name, value) in enumerate(params.items()):
+            ax.text(
+                normalized[i] + 0.02,
+                i,
+                f'{value:.1f}',
+                va='center',
+                fontsize=9
+            )
+    
+    def _plot_performance_distribution(self, ax):
+        """Plot performance distribution box plot."""
+        if not self.results:
+            return
+        
+        data = []
+        labels = []
+        
+        for name, result in self.results.items():
+            data.append(result['latency'])
+            labels.append(name[:10])
+        
+        ax.boxplot(data, labels=labels, showmeans=True)
+        ax.set_ylabel('Latency (ms)')
+        ax.set_title('Performance Distribution')
+        ax.grid(True, alpha=0.3, axis='y')
+        ax.tick_params(axis='x', rotation=45)
+    
+    def _plot_improvement_analysis(self, ax):
+        """Plot improvement analysis."""
+        if len(self.results) < 2:
+            return
+        
+        # Find baseline (worst) and proposed (best)
+        approaches = list(self.results.keys())
+        baseline = approaches[0]  # First approach as baseline
+        proposed = 'Hydra_RAN' if 'Hydra_RAN' in approaches else approaches[-1]
+        
+        if baseline == proposed:
+            return
+        
+        baseline_latency = self.results[baseline]['latency']
+        proposed_latency = self.results[proposed]['latency']
+        density = self.results[baseline]['density']
+        
+        # Calculate improvement percentage
+        improvement = (baseline_latency - proposed_latency) / baseline_latency * 100
+        
+        ax.plot(density, improvement, 'g-', linewidth=2)
+        ax.axhline(y=0, color='k', linestyle='--', alpha=0.3)
+        ax.fill_between(density, 0, improvement, where=(improvement > 0), 
+                       alpha=0.3, color='green', label='Improvement')
+        ax.fill_between(density, 0, improvement, where=(improvement < 0), 
+                       alpha=0.3, color='red', label='Degradation')
+        
+        ax.set_xlabel('Vehicle Density')
+        ax.set_ylabel('Improvement (%)')
+        ax.set_title(f'Improvement: {proposed} vs {baseline}')
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+
+# ===============================
+# Interactive Dashboard
+# ===============================
+
+class InteractiveDashboard:
+    """Interactive dashboard for parameter exploration."""
+    
+    def __init__(self, simulator: DynamicLatencySimulator):
+        self.simulator = simulator
+        self.output = widgets.Output()
+        
+        # Create widgets
+        self._create_parameter_widgets()
+        self._create_control_widgets()
+        
+        # Assemble dashboard
+        self.dashboard = self._assemble_dashboard()
+    
+    def _create_parameter_widgets(self):
+        """Create parameter adjustment widgets."""
+        
+        # Dataset parameters
+        self.dataset_widgets = {
+            'average_speed': widgets.FloatSlider(
+                value=self.simulator.dataset.average_speed,
+                min=10,
+                max=120,
+                step=5,
+                description='Avg Speed (km/h):',
+                continuous_update=False
+            ),
+            'vehicle_spacing': widgets.FloatSlider(
+                value=self.simulator.dataset.vehicle_spacing,
+                min=2,
+                max=50,
+                step=1,
+                description='Spacing (m):',
+                continuous_update=False
+            ),
+            'lane_count': widgets.IntSlider(
+                value=self.simulator.dataset.lane_count,
+                min=1,
+                max=8,
+                step=1,
+                description='Lanes:',
+                continuous_update=False
+            )
+        }
+        
+        # Network parameters
+        self.network_widgets = {
+            'bandwidth': widgets.FloatSlider(
+                value=self.simulator.network.bandwidth,
+                min=10,
+                max=1000,
+                step=10,
+                description='Bandwidth (MHz):',
+                continuous_update=False
+            ),
+            'edge_compute_capacity': widgets.FloatSlider(
+                value=self.simulator.network.edge_compute_capacity,
+                min=0.1,
+                max=100,
+                step=1,
+                description='Edge Compute (TFLOPs):',
+                continuous_update=False
+            ),
+            'rsu_density': widgets.FloatSlider(
+                value=self.simulator.network.rsu_density,
+                min=0.1,
+                max=2.0,
+                step=0.1,
+                description='RSU Density (/km):',
+                continuous_update=False
+            )
+        }
+        
+        # Application parameters
+        self.application_widgets = {
+            'sensing_update_rate': widgets.FloatSlider(
+                value=self.simulator.application.sensing_update_rate,
+                min=1,
+                max=1000,
+                step=10,
+                description='Sensing Rate (Hz):',
+                continuous_update=False
+            ),
+            'safety_critical_threshold': widgets.FloatSlider(
+                value=self.simulator.application.safety_critical_threshold,
+                min=10,
+                max=500,
+                step=10,
+                description='Safety Threshold (ms):',
+                continuous_update=False
+            )
+        }
+        
+        # Set up change handlers
+        for widget_dict in [self.dataset_widgets, self.network_widgets, self.application_widgets]:
+            for param_name, widget in widget_dict.items():
+                widget.observe(lambda change, pn=param_name: self._on_parameter_change(pn, change), 'value')
+    
+    def _create_control_widgets(self):
+        """Create control widgets."""
+        self.run_button = widgets.Button(
+            description='Run Simulation',
+            button_style='success',
+            icon='play'
+        )
+        self.run_button.on_click(self._run_simulation)
+        
+        self.reset_button = widgets.Button(
+            description='Reset Parameters',
+            button_style='warning',
+            icon='refresh'
+        )
+        self.reset_button.on_click(self._reset_parameters)
+        
+        self.scenario_dropdown = widgets.Dropdown(
+            options=['Urban Congested', 'Highway Free Flow', 'City Center', 'Suburban'],
+            value='Urban Congested',
+            description='Scenario:'
+        )
+        self.scenario_dropdown.observe(self._on_scenario_change, 'value')
+    
+    def _assemble_dashboard(self):
+        """Assemble the complete dashboard."""
+        # Create tabs for different parameter categories
+        dataset_tab = widgets.VBox(list(self.dataset_widgets.values()))
+        network_tab = widgets.VBox(list(self.network_widgets.values()))
+        application_tab = widgets.VBox(list(self.application_widgets.values()))
+        
+        parameter_tabs = widgets.Tab()
+        parameter_tabs.children = [dataset_tab, network_tab, application_tab]
+        parameter_tabs.set_title(0, 'Traffic Parameters')
+        parameter_tabs.set_title(1, 'Network Parameters')
+        parameter_tabs.set_title(2, 'Application Parameters')
+        
+        # Control panel
+        control_panel = widgets.VBox([
+            self.scenario_dropdown,
+            widgets.HBox([self.run_button, self.reset_button])
+        ])
+        
+        # Assemble layout
+        left_panel = widgets.VBox([
+            widgets.Label('Parameter Controls', fontweight='bold'),
+            parameter_tabs,
+            widgets.HR(),
+            control_panel
+        ])
+        
+        # Full dashboard
+        dashboard = widgets.HBox([
+            left_panel,
+            self.output
+        ], layout=widgets.Layout(width='100%'))
+        
+        return dashboard
+    
+    def _on_parameter_change(self, param_name: str, change):
+        """Handle parameter change."""
+        param_path = f"dataset.{param_name}"
+        
+        # Determine correct component
+        if param_name in self.network_widgets:
+            param_path = f"network.{param_name}"
+        elif param_name in self.application_widgets:
+            param_path = f"application.{param_name}"
+        
+        # Update parameter in simulator
+        result = self.simulator.update_parameter(param_path, change['new'])
+        
+        # Update display if simulation was successful
+        if result.get('success', False):
+            with self.output:
+                clear_output(wait=True)
+                self.simulator.plot_results()
+    
+    def _on_scenario_change(self, change):
+        """Handle scenario change."""
+        scenario_map = {
+            'Urban Congested': {
+                'dataset.average_speed': 30,
+                'dataset.vehicle_spacing': 5,
+                'dataset.lane_count': 4
+            },
+            'Highway Free Flow': {
+                'dataset.average_speed': 100,
+                'dataset.vehicle_spacing': 50,
+                'dataset.lane_count': 3
+            },
+            'City Center': {
+                'dataset.average_speed': 20,
+                'dataset.vehicle_spacing': 2,
+                'dataset.lane_count': 6
+            },
+            'Suburban': {
+                'dataset.average_speed': 50,
+                'dataset.vehicle_spacing': 20,
+                'dataset.lane_count': 2
+            }
+        }
+        
+        if change['new'] in scenario_map:
+            scenario = scenario_map[change['new']]
+            for param_path, value in scenario.items():
+                self.simulator.update_parameter(param_path, value)
+            
+            # Update widget values
+            for param, value in scenario.items():
+                component, param_name = param_path.split('.')
+                if component == 'dataset' and param_name in self.dataset_widgets:
+                    self.dataset_widgets[param_name].value = value
+            
+            with self.output:
+                clear_output(wait=True)
+                self.simulator.plot_results()
+    
+    def _run_simulation(self, b):
+        """Run full simulation."""
+        with self.output:
+            clear_output(wait=True)
+            print("Running simulation with current parameters...")
+            self.simulator.run_simulation()
+            self.simulator.plot_results()
+            print("\nSimulation complete!")
+    
+    def _reset_parameters(self, b):
+        """Reset parameters to defaults."""
+        # Reset simulator
+        self.simulator = DynamicLatencySimulator()
+        
+        # Reset widget values
+        for param_name, widget in self.dataset_widgets.items():
+            widget.value = getattr(self.simulator.dataset, param_name)
+        
+        for param_name, widget in self.network_widgets.items():
+            widget.value = getattr(self.simulator.network, param_name)
+        
+        for param_name, widget in self.application_widgets.items():
+            widget.value = getattr(self.simulator.application, param_name)
+        
+        with self.output:
+            clear_output(wait=True)
+            print("Parameters reset to defaults.")
+            self.simulator.plot_results()
+    
+    def display(self):
+        """Display the dashboard."""
+        display(self.dashboard)
+        # Initial plot
+        with self.output:
+            self.simulator.plot_results()
+
+# ===============================
+# Main Execution
+# ===============================
+
+def main():
+    """Main execution function."""
+    print("=" * 80)
+    print("DYNAMIC PARAMETER-RESPONSIVE LATENCY SIMULATION FRAMEWORK")
+    print("IEEE Transactions on Communications - Enhanced Version")
+    print("=" * 80)
+    
+    # Create simulator
+    simulator = DynamicLatencySimulator()
+    
+    # Run initial simulation
+    print("\nRunning initial simulation with default parameters...")
+    simulator.run_simulation()
+    
+    # Display initial results
+    print("\nInitial Performance Summary:")
+    print("-" * 80)
+    
+    for name, result in simulator.results.items():
+        metrics = result['metrics']
+        print(f"\n{name}:")
+        print(f"  Average Latency: {metrics['average_latency']:.1f} ms")
+        print(f"  Safety Compliance: {metrics['safety_compliance_rate']:.1f}%")
+        print(f"  Efficiency Score: {metrics['efficiency_score']:.1f}")
+        print(f"  Max Latency: {metrics['max_latency']:.1f} ms")
+    
+    # Demonstrate parameter responsiveness
+    print("\n" + "=" * 80)
+    print("DEMONSTRATING PARAMETER RESPONSIVENESS")
+    print("=" * 80)
+    
+    # Example 1: Increase vehicle density effect
+    print("\n1. Increasing vehicle density from 0.5 to 0.8...")
+    simulator.update_parameter("dataset.vehicle_spacing", 2)  # More dense
+    hydra_metrics = simulator.results['Hydra_RAN']['metrics']
+    print(f"   Hydra-RAN average latency: {hydra_metrics['average_latency']:.1f} ms")
+    print(f"   Safety compliance: {hydra_metrics['safety_compliance_rate']:.1f}%")
+    
+    # Example 2: Improve network bandwidth
+    print("\n2. Doubling network bandwidth to 200 MHz...")
+    simulator.update_parameter("network.bandwidth", 200)
+    hydra_metrics = simulator.results['Hydra_RAN']['metrics']
+    print(f"   Hydra-RAN average latency: {hydra_metrics['average_latency']:.1f} ms")
+    
+    # Example 3: Change application requirements
+    print("\n3. Changing to high-frequency sensing (500 Hz)...")
+    simulator.update_parameter("application.sensing_update_rate", 500)
+    hydra_metrics = simulator.results['Hydra_RAN']['metrics']
+    print(f"   Hydra-RAN average latency: {hydra_metrics['average_latency']:.1f} ms")
+    print(f"   Safety compliance: {hydra_metrics['safety_compliance_rate']:.1f}%")
+    
+    # Run sensitivity analysis
+    print("\n" + "=" * 80)
+    print("RUNNING SENSITIVITY ANALYSIS")
+    print("=" * 80)
+    
+    sensitivity_df = simulator.get_sensitivity_matrix()
+    if not sensitivity_df.empty:
+        print("\nTop parameter impacts on average latency:")
+        grouped = sensitivity_df.groupby('parameter')['average_latency'].std().sort_values(ascending=False)
+        for param, impact in grouped.head(5).items():
+            print(f"  {param}: ±{impact:.1f} ms variation")
+    
+    # Create comprehensive visualization
+    print("\n" + "=" * 80)
+    print("GENERATING COMPREHENSIVE VISUALIZATION")
+    print("=" * 80)
+    
+    simulator.plot_results(save_path='dynamic_latency_analysis.pdf')
+    
+    # Save results
+    results_summary = {
+        'parameters': {
+            'dataset': asdict(simulator.dataset),
+            'network': asdict(simulator.network),
+            'application': asdict(simulator.application)
+        },
+        'performance_metrics': simulator.metrics,
+        'sensitivity_analysis': sensitivity_df.to_dict('records') if not sensitivity_df.empty else {}
+    }
+    
+    with open('simulation_results.json', 'w') as f:
+        json.dump(results_summary, f, indent=2, default=str)
+    
+    print("\n" + "=" * 80)
+    print("SIMULATION COMPLETE")
+    print("=" * 80)
+    print("\nSummary:")
+    print(f"✓ Results saved to: simulation_results.json")
+    print(f"✓ Visualization saved to: dynamic_latency_analysis.pdf")
+    print(f"✓ Best approach: {simulator.metrics.get('comparative', {}).get('best_approach', 'N/A')}")
+    print(f"✓ Worst approach: {simulator.metrics.get('comparative', {}).get('worst_approach', 'N/A')}")
+    print(f"✓ Overall improvement: {simulator.metrics.get('comparative', {}).get('improvement_over_worst', 0):.1f}%")
+    
+    # Interactive dashboard option
+    print("\nFor interactive parameter exploration:")
+    print("  dashboard = InteractiveDashboard(simulator)")
+    print("  dashboard.display()")
+    
+    return simulator
+
+# ===============================
+# Example Usage Patterns
+# ===============================
+
+if __name__ == "__main__":
+    
+    # Option 1: Run full analysis
+    simulator = main()
+    
+    # Option 2: Interactive exploration
+    # dashboard = InteractiveDashboard(simulator)
+    # dashboard.display()
+    
+    # Option 3: Programmatic parameter exploration
+    print("\n" + "=" * 80)
+    print("PROGRAMMATIC PARAMETER EXPLORATION EXAMPLES")
+    print("=" * 80)
+    
+    print("\nExample 1: Test different traffic scenarios")
+    print("  scenarios = ['Urban Congested', 'Highway Free Flow', 'City Center']")
+    print("  for scenario in scenarios:")
+    print("    simulator.update_parameter('dataset.average_speed', SPEED_MAP[scenario])")
+    print("    simulator.run_simulation()")
+    print("    print(f'{scenario}: {simulator.results['Hydra_RAN']['metrics']['average_latency']:.1f} ms')")
+    
+    print("\nExample 2: Explore bandwidth vs compute tradeoff")
+    print("  bandwidth_range = [50, 100, 200, 500]")
+    print("  compute_range = [5, 10, 20, 50]")
+    print("  for bw in bandwidth_range:")
+    print("    for comp in compute_range:")
+    print("      simulator.update_parameter('network.bandwidth', bw)")
+    print("      simulator.update_parameter('network.edge_compute_capacity', comp)")
+    print("      simulator.run_simulation()")
+    print("      # Analyze results...")
+    
+    print("\nExample 3: Sensitivity to application requirements")
+    print("  sensing_rates = [10, 30, 100, 300, 1000]")
+    print("  thresholds = [10, 20, 50, 100, 200]")
+    print("  for rate in sensing_rates:")
+    print("    for threshold in thresholds:")
+    print("      simulator.update_parameter('application.sensing_update_rate', rate)")
+    print("      simulator.update_parameter('application.safety_critical_threshold', threshold)")
+    print("      success = simulator.results['Hydra_RAN']['metrics']['safety_compliance_rate']")
+    print("      print(f'Rate={rate}Hz, Threshold={threshold}ms: {success:.1f}% compliant')")
+    
+    print("\nExample 4: Compare approaches under stress conditions")
+    print("  # Create high-stress scenario")
+    print("  simulator.update_parameter('dataset.vehicle_spacing', 2)")
+    print("  simulator.update_parameter('network.bandwidth', 20)")
+    print("  simulator.update_parameter('application.sensing_update_rate', 500)")
+    print("  simulator.run_simulation()")
+    print("  ")
+    print("  # Find which approaches still meet safety requirements")
+    print("  for name, result in simulator.results.items():")
+    print("    if result['metrics']['safety_compliance_rate'] > 90:")
+    print("      print(f'{name}: SAFE')")
+    print("    else:")
+    print("      print(f'{name}: UNSAFE')")
+
+
+
+# 
+
+
+
