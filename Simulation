@@ -5890,7 +5890,1584 @@ if __name__ == "__main__":
 
 
 
-# 
+# # Generate synthetic data for the three methods
+
+
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+from scipy.signal import savgol_filter
+from dataclasses import dataclass, field
+from typing import Dict, List, Tuple, Optional, Callable, Any
+from enum import Enum, auto
+import warnings
+warnings.filterwarnings('ignore')
+import ipywidgets as widgets
+from IPython.display import display, clear_output
+import json
+
+# ============================================
+# DYNAMIC SIMULATION FRAMEWORK
+# ============================================
+
+class ScenarioType(Enum):
+    """Types of driving scenarios."""
+    NORMAL_DRIVING = auto()
+    EMERGENCY_BRAKING = auto()
+    CUT_IN = auto()
+    PEDESTRIAN_CROSSING = auto()
+    INTERSECTION = auto()
+    HIGHWAY_MERGING = auto()
+    ADVERSE_WEATHER = auto()
+    SENSOR_FAILURE = auto()
+
+class EnvironmentCondition(Enum):
+    """Environmental conditions."""
+    CLEAR = auto()
+    RAIN = auto()
+    SNOW = auto()
+    FOG = auto()
+    NIGHT = auto()
+    GLARE = auto()
+
+class CommunicationQuality(Enum):
+    """Communication channel quality."""
+    EXCELLENT = auto()
+    GOOD = auto()
+    FAIR = auto()
+    POOR = auto()
+    INTERMITTENT = auto()
+
+@dataclass
+class DynamicParameter:
+    """A parameter that can change dynamically and affect performance."""
+    name: str
+    value: float
+    min_value: float
+    max_value: float
+    default: float
+    unit: str = ""
+    category: str = ""
+    sensitivity: float = 1.0  # How much it affects performance
+    dependencies: List[str] = field(default_factory=list)
+    
+    def update(self, new_value: float) -> bool:
+        """Update parameter with bounds checking."""
+        if self.min_value <= new_value <= self.max_value:
+            self.value = new_value
+            return True
+        return False
+
+@dataclass
+class SimulationScenario:
+    """Complete scenario configuration with dynamic parameters."""
+    name: str = "Default Scenario"
+    scenario_type: ScenarioType = ScenarioType.NORMAL_DRIVING
+    environment: EnvironmentCondition = EnvironmentCondition.CLEAR
+    communication_quality: CommunicationQuality = CommunicationQuality.GOOD
+    
+    # Timing parameters
+    total_time: float = 10.0
+    critical_event_time: float = 5.0
+    event_duration: float = 1.5
+    time_resolution: int = 501
+    
+    # Scenario-specific parameters
+    traffic_density: float = 0.5  # 0-1
+    vehicle_speed: float = 60.0  # km/h
+    road_complexity: float = 0.3  # 0-1
+    uncertainty_level: float = 0.2  # 0-1
+    sensor_noise: float = 0.1  # 0-1
+    computation_constraint: float = 0.8  # 0-1 (1=no constraint)
+    
+    # Communication parameters
+    bandwidth: float = 10.0  # Mbps
+    latency: float = 20.0  # ms
+    packet_loss: float = 0.01  # 0-1
+    update_frequency: float = 10.0  # Hz
+    
+    # Vehicle parameters
+    ego_reaction_time: float = 0.2  # seconds
+    other_vehicle_aggressiveness: float = 0.3  # 0-1
+    obstacle_density: float = 0.2  # 0-1
+    
+    def __post_init__(self):
+        """Initialize computed properties."""
+        self.time_array = np.linspace(0, self.total_time, self.time_resolution)
+        self._update_scenario_factors()
+    
+    def _update_scenario_factors(self):
+        """Compute scenario difficulty factors."""
+        # Environmental factor (0-1, higher = worse)
+        env_factors = {
+            EnvironmentCondition.CLEAR: 0.1,
+            EnvironmentCondition.RAIN: 0.4,
+            EnvironmentCondition.SNOW: 0.7,
+            EnvironmentCondition.FOG: 0.6,
+            EnvironmentCondition.NIGHT: 0.5,
+            EnvironmentCondition.GLARE: 0.4
+        }
+        env_factor = env_factors.get(self.environment, 0.3)
+        
+        # Communication factor (0-1, higher = worse)
+        comm_factors = {
+            CommunicationQuality.EXCELLENT: 0.1,
+            CommunicationQuality.GOOD: 0.2,
+            CommunicationQuality.FAIR: 0.4,
+            CommunicationQuality.POOR: 0.7,
+            CommunicationQuality.INTERMITTENT: 0.9
+        }
+        comm_factor = comm_factors.get(self.communication_quality, 0.3)
+        
+        # Scenario complexity factor
+        scenario_factors = {
+            ScenarioType.NORMAL_DRIVING: 0.2,
+            ScenarioType.EMERGENCY_BRAKING: 0.8,
+            ScenarioType.CUT_IN: 0.6,
+            ScenarioType.PEDESTRIAN_CROSSING: 0.7,
+            ScenarioType.INTERSECTION: 0.5,
+            ScenarioType.HIGHWAY_MERGING: 0.4,
+            ScenarioType.ADVERSE_WEATHER: 0.7,
+            ScenarioType.SENSOR_FAILURE: 0.9
+        }
+        scenario_factor = scenario_factors.get(self.scenario_type, 0.5)
+        
+        # Combined difficulty factor
+        self.difficulty_factor = (
+            env_factor * 0.2 +
+            comm_factor * 0.2 +
+            scenario_factor * 0.3 +
+            self.traffic_density * 0.1 +
+            self.road_complexity * 0.1 +
+            self.uncertainty_level * 0.1
+        )
+        
+        # Communication efficiency factor
+        self.comm_efficiency = max(0.1, 1 - (
+            comm_factor * 0.5 +
+            self.packet_loss * 0.3 +
+            (self.latency / 100) * 0.2
+        ))
+        
+        # Processing efficiency factor
+        self.processing_efficiency = max(0.1, 1 - (
+            self.computation_constraint * 0.4 +
+            self.sensor_noise * 0.3 +
+            self.difficulty_factor * 0.3
+        ))
+    
+    def update_parameter(self, param_name: str, value: float):
+        """Update any parameter and recompute factors."""
+        if hasattr(self, param_name):
+            setattr(self, param_name, value)
+            self._update_scenario_factors()
+    
+    def get_time_array(self) -> np.ndarray:
+        """Get time array for simulation."""
+        return self.time_array
+
+@dataclass
+class ApproachModel:
+    """Mathematical model for each approach's performance."""
+    name: str
+    type: str  # 'proposed', 'uncertainty_only', 'fixed'
+    
+    # Model parameters (can be adjusted dynamically)
+    parameters: Dict[str, float] = field(default_factory=lambda: {
+        'goal_satisfaction_baseline': 0.96,
+        'goal_satisfaction_variance': 0.02,
+        'event_response_magnitude': 0.05,
+        'event_response_width': 0.1,
+        'recovery_speed': 0.3,
+        'recovery_magnitude': 0.03,
+        
+        'communication_baseline': 0.08,
+        'communication_variance': 0.02,
+        'event_communication_spike': 0.4,
+        'event_comm_width': 0.15,
+        
+        'latency_baseline': 15.0,
+        'latency_variance': 2.0,
+        'event_latency_spike': 8.0,
+        'latency_recovery_speed': 0.4,
+        'latency_reduction': 3.0
+    })
+    
+    # Efficiency factors (0-1, higher = better)
+    goal_efficiency: float = 1.0
+    communication_efficiency: float = 1.0
+    latency_efficiency: float = 1.0
+    adaptability: float = 1.0  # Ability to adapt to changes
+    
+    # Dynamic adjustment functions
+    adjustment_functions: Dict[str, Callable] = field(default_factory=dict)
+    
+    def compute_goal_satisfaction(self, t: np.ndarray, scenario: SimulationScenario) -> np.ndarray:
+        """Compute goal satisfaction probability."""
+        params = self.parameters
+        
+        # Base performance
+        if self.type == 'proposed':
+            baseline = params['goal_satisfaction_baseline']
+            variance = params['goal_satisfaction_variance']
+            event_response = params['event_response_magnitude']
+            event_width = params['event_response_width']
+            recovery_speed = params['recovery_speed']
+            recovery_mag = params['recovery_magnitude']
+        elif self.type == 'uncertainty_only':
+            baseline = 0.90
+            variance = 0.03
+            event_response = 0.08
+            event_width = 0.3
+            recovery_speed = 0.8
+            recovery_mag = 0.04
+        else:  # fixed
+            baseline = 0.88
+            variance = 0.02
+            event_response = 0.12
+            event_width = 0.5
+            recovery_speed = 1.2
+            recovery_mag = 0.02
+        
+        # Adjust for scenario difficulty
+        difficulty_impact = (1 - self.goal_efficiency) * scenario.difficulty_factor * 0.2
+        baseline *= (1 - difficulty_impact)
+        
+        # Base oscillation
+        base = baseline + variance * np.sin(0.5 * t)
+        
+        # Event response
+        event_term = event_response * np.exp(-((t - scenario.critical_event_time) ** 2) / (2 * event_width ** 2))
+        
+        # Recovery
+        recovery = recovery_mag * (1 - np.exp(-(t - scenario.critical_event_time) / recovery_speed)) * (t > scenario.critical_event_time)
+        
+        # Combined
+        result = base - event_term + recovery
+        
+        # Apply efficiency and bounds
+        result *= self.goal_efficiency
+        result = np.clip(result, baseline * 0.9, 1.0)
+        
+        return result
+    
+    def compute_communication_overhead(self, t: np.ndarray, scenario: SimulationScenario) -> np.ndarray:
+        """Compute communication overhead."""
+        params = self.parameters
+        
+        if self.type == 'proposed':
+            baseline = params['communication_baseline']
+            variance = params['communication_variance']
+            event_spike = params['event_communication_spike']
+            event_width = params['event_comm_width']
+        elif self.type == 'uncertainty_only':
+            baseline = 0.15
+            variance = 0.03
+            event_spike = 0.6
+            event_width = 0.3
+        else:  # fixed
+            baseline = 0.25
+            variance = 0.0
+            event_spike = 0.3
+            event_width = 0.4
+        
+        # Adjust for communication quality
+        comm_impact = (1 - self.communication_efficiency) * (1 - scenario.comm_efficiency) * 0.3
+        baseline *= (1 + comm_impact)
+        
+        # Base with noise
+        base = baseline + variance * np.random.randn(len(t)) * 0.1
+        
+        # Event spike
+        event_term = event_spike * np.exp(-((t - scenario.critical_event_time) ** 2) / (2 * event_width ** 2))
+        
+        # For fixed approach, add periodic spikes
+        if self.type == 'fixed':
+            periodic = 0.15 * (np.sin(2 * np.pi * t / 0.5) > 0.7)
+            result = base + periodic + event_term
+        else:
+            result = base + event_term
+        
+        # Apply communication efficiency
+        result *= (1 / self.communication_efficiency)
+        
+        return np.clip(result, 0, 1.5)
+    
+    def compute_decision_latency(self, t: np.ndarray, scenario: SimulationScenario) -> np.ndarray:
+        """Compute decision latency."""
+        params = self.parameters
+        
+        if self.type == 'proposed':
+            baseline = params['latency_baseline']
+            variance = params['latency_variance']
+            event_spike = params['event_latency_spike']
+            recovery_speed = params['latency_recovery_speed']
+            reduction = params['latency_reduction']
+        elif self.type == 'uncertainty_only':
+            baseline = 22.0
+            variance = 3.0
+            event_spike = 12.0
+            recovery_speed = 0.8
+            reduction = 4.0
+        else:  # fixed
+            baseline = 32.0
+            variance = 4.0
+            event_spike = 15.0
+            recovery_speed = 1.2
+            reduction = 2.0
+        
+        # Adjust for processing constraints
+        processing_impact = (1 - self.latency_efficiency) * (1 - scenario.processing_efficiency) * 10
+        baseline += processing_impact
+        
+        # Base with oscillation
+        base = baseline + variance * np.sin(0.4 * t)
+        
+        # Event spike
+        event_term = event_spike * np.exp(-((t - scenario.critical_event_time) ** 2) / (2 * 0.2 ** 2))
+        
+        # Recovery
+        recovery = -reduction * (1 - np.exp(-(t - scenario.critical_event_time) / recovery_speed)) * (t > scenario.critical_event_time)
+        
+        # Combined
+        result = base + event_term + recovery
+        
+        # Apply latency efficiency
+        result *= (1 / self.latency_efficiency)
+        
+        return np.clip(result, 10, 50)
+
+# ============================================
+# DYNAMIC SIMULATION ENGINE
+# ============================================
+
+class DynamicGoalAwareSimulator:
+    """Main simulator with fully dynamic parameter response."""
+    
+    def __init__(self):
+        # Initialize scenario
+        self.scenario = SimulationScenario()
+        
+        # Initialize approaches
+        self.approaches = {
+            'Proposed (Goal-Aware)': ApproachModel(
+                name='Proposed (Goal-Aware)',
+                type='proposed',
+                goal_efficiency=0.95,
+                communication_efficiency=0.85,
+                latency_efficiency=0.90,
+                adaptability=0.95
+            ),
+            'Uncertainty-Only (Ablation)': ApproachModel(
+                name='Uncertainty-Only (Ablation)',
+                type='uncertainty_only',
+                goal_efficiency=0.80,
+                communication_efficiency=0.70,
+                latency_efficiency=0.75,
+                adaptability=0.60
+            ),
+            'Hierarchical Baseline (Fixed)': ApproachModel(
+                name='Hierarchical Baseline (Fixed)',
+                type='fixed',
+                goal_efficiency=0.70,
+                communication_efficiency=0.50,
+                latency_efficiency=0.60,
+                adaptability=0.30
+            )
+        }
+        
+        # Results storage
+        self.results: Dict[str, Dict[str, np.ndarray]] = {}
+        self.metrics: Dict[str, Dict[str, float]] = {}
+        
+        # Run initial simulation
+        self.run_simulation()
+    
+    def update_scenario_parameter(self, param_name: str, value: float) -> bool:
+        """Update scenario parameter and re-run simulation."""
+        success = False
+        
+        # Check if parameter exists
+        if hasattr(self.scenario, param_name):
+            old_value = getattr(self.scenario, param_name)
+            self.scenario.update_parameter(param_name, value)
+            success = True
+            
+            # Adjust approach efficiencies based on parameter changes
+            self._adjust_approach_efficiencies(param_name, old_value, value)
+            
+            # Re-run simulation
+            self.run_simulation()
+        
+        return success
+    
+    def _adjust_approach_efficiencies(self, param_name: str, old_value: float, new_value: float):
+        """Adjust approach efficiencies based on parameter changes."""
+        change_ratio = new_value / old_value if old_value != 0 else 1.0
+        
+        # Adjust based on parameter type
+        if param_name == 'traffic_density':
+            # Higher density reduces efficiency for all approaches, but proposed handles it better
+            density_impact = (new_value - old_value) * 0.3
+            for name, approach in self.approaches.items():
+                reduction = density_impact * (1 - approach.adaptability)
+                approach.goal_efficiency = max(0.5, approach.goal_efficiency - reduction)
+                
+        elif param_name == 'communication_quality':
+            # Update communication efficiency based on quality
+            for name, approach in self.approaches.items():
+                approach.communication_efficiency *= (1 + (new_value - old_value) * approach.adaptability)
+                approach.communication_efficiency = np.clip(approach.communication_efficiency, 0.3, 1.0)
+                
+        elif param_name == 'uncertainty_level':
+            # Uncertainty affects uncertainty-only approach more
+            uncertainty_impact = (new_value - old_value) * 0.4
+            self.approaches['Uncertainty-Only (Ablation)'].goal_efficiency -= uncertainty_impact * 0.8
+            self.approaches['Proposed (Goal-Aware)'].goal_efficiency -= uncertainty_impact * 0.3
+            self.approaches['Hierarchical Baseline (Fixed)'].goal_efficiency -= uncertainty_impact * 0.5
+    
+    def update_approach_parameter(self, approach_name: str, param_name: str, value: float) -> bool:
+        """Update approach-specific parameter."""
+        if approach_name in self.approaches:
+            if param_name in self.approaches[approach_name].parameters:
+                self.approaches[approach_name].parameters[param_name] = value
+                self.run_simulation()
+                return True
+        return False
+    
+    def run_simulation(self):
+        """Run simulation with current parameters."""
+        t = self.scenario.get_time_array()
+        
+        # Clear previous results
+        self.results = {}
+        self.metrics = {}
+        
+        # Compute metrics for each approach
+        for name, approach in self.approaches.items():
+            # Compute raw metrics
+            goal_raw = approach.compute_goal_satisfaction(t, self.scenario)
+            comm_raw = approach.compute_communication_overhead(t, self.scenario)
+            latency_raw = approach.compute_decision_latency(t, self.scenario)
+            
+            # Apply smoothing
+            goal_smooth = savgol_filter(goal_raw, 51, 3)
+            comm_smooth = savgol_filter(comm_raw, 31, 3)
+            latency_smooth = savgol_filter(latency_raw, 41, 3)
+            
+            # Compute cumulative communication
+            cum_comm = np.cumsum(comm_smooth)
+            
+            # Normalize cumulative communication
+            if name == 'Proposed (Goal-Aware)':
+                # Use proposed as baseline for normalization
+                norm_factor = np.max(cum_comm) if np.max(cum_comm) > 0 else 1.0
+            else:
+                # Scale relative to proposed
+                proposed_max = np.max(self.results.get('Proposed (Goal-Aware)', {}).get('cum_comm', [1.0]))
+                norm_factor = proposed_max
+            
+            cum_comm_norm = cum_comm / norm_factor
+            
+            # Store results
+            self.results[name] = {
+                'goal': goal_smooth,
+                'comm': comm_smooth,
+                'cum_comm': cum_comm_norm,
+                'latency': latency_smooth,
+                'time': t
+            }
+            
+            # Compute performance metrics
+            self.metrics[name] = self._compute_performance_metrics(name, t)
+    
+    def _compute_performance_metrics(self, approach_name: str, t: np.ndarray) -> Dict[str, float]:
+        """Compute comprehensive performance metrics."""
+        if approach_name not in self.results:
+            return {}
+        
+        data = self.results[approach_name]
+        window_mask = (t >= self.scenario.critical_event_time - 0.5) & (t <= self.scenario.critical_event_time + 1.5)
+        
+        # Basic statistics
+        goal_avg = np.mean(data['goal'][window_mask])
+        goal_min = np.min(data['goal'][window_mask])
+        goal_std = np.std(data['goal'][window_mask])
+        
+        comm_total = np.trapz(data['comm'][window_mask], t[window_mask])
+        comm_peak = np.max(data['comm'][window_mask])
+        
+        latency_avg = np.mean(data['latency'][window_mask])
+        latency_peak = np.max(data['latency'][window_mask])
+        latency_std = np.std(data['latency'][window_mask])
+        
+        # Advanced metrics
+        # Recovery speed (time to recover to 95% of baseline after event)
+        event_idx = np.argmin(np.abs(t - self.scenario.critical_event_time))
+        baseline = data['goal'][:event_idx].mean()
+        recovery_threshold = baseline * 0.95
+        
+        recovery_indices = np.where(data['goal'][event_idx:] >= recovery_threshold)[0]
+        if len(recovery_indices) > 0:
+            recovery_time = t[event_idx + recovery_indices[0]] - self.scenario.critical_event_time
+        else:
+            recovery_time = t[-1] - self.scenario.critical_event_time
+        
+        # Communication efficiency (goal satisfaction per communication unit)
+        comm_efficiency = goal_avg / (comm_total + 1e-10)
+        
+        # Latency consistency (inverse of variability)
+        latency_consistency = 1.0 / (latency_std + 1e-10)
+        
+        # Overall performance score
+        performance_score = (
+            goal_avg * 0.4 +
+            (1 - comm_total / 10) * 0.3 +
+            (1 - latency_avg / 50) * 0.2 +
+            (1 / (recovery_time + 1)) * 0.1
+        )
+        
+        return {
+            'goal_satisfaction_avg': goal_avg,
+            'goal_satisfaction_min': goal_min,
+            'goal_satisfaction_std': goal_std,
+            'communication_total': comm_total,
+            'communication_peak': comm_peak,
+            'latency_avg': latency_avg,
+            'latency_peak': latency_peak,
+            'latency_std': latency_std,
+            'recovery_time': recovery_time,
+            'communication_efficiency': comm_efficiency,
+            'latency_consistency': latency_consistency,
+            'performance_score': performance_score
+        }
+    
+    def get_comparative_analysis(self) -> Dict[str, Dict[str, float]]:
+        """Get comparative analysis between approaches."""
+        if not self.metrics:
+            return {}
+        
+        comparative = {}
+        proposed_metrics = self.metrics['Proposed (Goal-Aware)']
+        
+        for name, metrics in self.metrics.items():
+            if name != 'Proposed (Goal-Aware)':
+                improvements = {}
+                
+                # Goal satisfaction improvement
+                if 'goal_satisfaction_avg' in metrics and 'goal_satisfaction_avg' in proposed_metrics:
+                    improvement = (proposed_metrics['goal_satisfaction_avg'] - metrics['goal_satisfaction_avg']) / metrics['goal_satisfaction_avg'] * 100
+                    improvements['goal_improvement_pct'] = improvement
+                
+                # Communication reduction
+                if 'communication_total' in metrics and 'communication_total' in proposed_metrics:
+                    reduction = (1 - proposed_metrics['communication_total'] / metrics['communication_total']) * 100
+                    improvements['communication_reduction_pct'] = reduction
+                
+                # Latency reduction
+                if 'latency_avg' in metrics and 'latency_avg' in proposed_metrics:
+                    reduction = (1 - proposed_metrics['latency_avg'] / metrics['latency_avg']) * 100
+                    improvements['latency_reduction_pct'] = reduction
+                
+                # Recovery speed improvement
+                if 'recovery_time' in metrics and 'recovery_time' in proposed_metrics:
+                    improvement = (metrics['recovery_time'] - proposed_metrics['recovery_time']) / metrics['recovery_time'] * 100
+                    improvements['recovery_improvement_pct'] = improvement
+                
+                comparative[name] = improvements
+        
+        return comparative
+
+# ============================================
+# DYNAMIC VISUALIZATION
+# ============================================
+
+class DynamicVisualization:
+    """Dynamic visualization system that responds to parameter changes."""
+    
+    def __init__(self, simulator: DynamicGoalAwareSimulator):
+        self.simulator = simulator
+        self.fig = None
+        self.axs = None
+        
+        # Set style for IEEE publication
+        plt.rcParams.update({
+            'font.family': 'serif',
+            'font.serif': ['Times New Roman'],
+            'text.usetex': False,
+            'figure.figsize': (20, 18),
+            'figure.dpi': 300,
+            'savefig.dpi': 600,
+            'font.size': 40,
+            'axes.labelsize': 40,
+            'axes.titlesize': 40,
+            'legend.fontsize': 40,
+            'xtick.labelsize': 40,
+            'ytick.labelsize': 40,
+            'lines.linewidth': 3.5,
+            'axes.linewidth': 2.5,
+            'axes.grid': True,
+            'grid.alpha': 0.3,
+            'axes.axisbelow': True,
+        })
+        
+        # Define colors
+        self.colors = {
+            'Proposed (Goal-Aware)': '#2E7D32',  # Green
+            'Uncertainty-Only (Ablation)': '#FF8F00',  # Orange
+            'Hierarchical Baseline (Fixed)': '#C62828'  # Red
+        }
+    
+    def create_visualization(self, save_path: Optional[str] = None):
+        """Create comprehensive visualization."""
+        if self.fig is None:
+            self.fig = plt.figure(figsize=(20, 18))
+        
+        # Clear previous plots
+        if self.axs is not None:
+            for ax in self.axs:
+                ax.clear()
+        
+        # Create grid
+        gs = gridspec.GridSpec(3, 3, width_ratios=[1, 1, 0.8], height_ratios=[1, 1, 1])
+        gs.update(hspace=0.35, wspace=0.35)
+        
+        # Plot 1: Goal Satisfaction Probability
+        ax1 = self.fig.add_subplot(gs[0, 0])
+        self._plot_goal_satisfaction(ax1)
+        
+        # Plot 2: Communication Overhead
+        ax2 = self.fig.add_subplot(gs[0, 1])
+        self._plot_communication_overhead(ax2)
+        
+        # Plot 3: Performance Metrics (Radar chart)
+        ax3 = self.fig.add_subplot(gs[0, 2])
+        self._plot_performance_radar(ax3)
+        
+        # Plot 4: Decision Latency
+        ax4 = self.fig.add_subplot(gs[1, :2])
+        self._plot_decision_latency(ax4)
+        
+        # Plot 5: Scenario Parameters
+        ax5 = self.fig.add_subplot(gs[1, 2])
+        self._plot_scenario_parameters(ax5)
+        
+        # Plot 6: Comparative Analysis
+        ax6 = self.fig.add_subplot(gs[2, 0])
+        self._plot_comparative_analysis(ax6)
+        
+        # Plot 7: Time-Series Comparison
+        ax7 = self.fig.add_subplot(gs[2, 1])
+        self._plot_time_series_comparison(ax7)
+        
+        # Plot 8: Efficiency Metrics
+        ax8 = self.fig.add_subplot(gs[2, 2])
+        self._plot_efficiency_metrics(ax8)
+        
+        # Add overall title
+        plt.suptitle(
+            f"Dynamic Goal-Aware Framework Evaluation\n"
+            f"Scenario: {self.simulator.scenario.scenario_type.name} | "
+            f"Environment: {self.simulator.scenario.environment.name} | "
+            f"Comm Quality: {self.simulator.scenario.communication_quality.name}",
+            fontsize=42,
+            fontweight='bold'
+        )
+        
+        plt.tight_layout(rect=[0, 0, 1, 0.96])
+        
+        if save_path:
+            plt.savefig(save_path, format='jpg', bbox_inches='tight', dpi=600)
+            plt.savefig(save_path.replace('.jpg', '.pdf'), format='pdf', bbox_inches='tight')
+        
+        plt.show()
+        return self.fig
+    
+    def _plot_goal_satisfaction(self, ax):
+        """Plot goal satisfaction probability."""
+        for name, color in self.colors.items():
+            if name in self.simulator.results:
+                data = self.simulator.results[name]
+                ax.plot(data['time'], data['goal'], color=color, linewidth=3.5, label=name)
+        
+        # Highlight critical event
+        event_time = self.simulator.scenario.critical_event_time
+        event_duration = self.simulator.scenario.event_duration
+        
+        ax.axvspan(event_time - 0.2, event_time + 1.0, alpha=0.1, color='red')
+        ax.axvline(x=event_time, color='red', linestyle='-', linewidth=2.0, alpha=0.6)
+        
+        ax.set_ylabel('Goal Satisfaction\nProbability', fontsize=40, weight='bold')
+        ax.set_ylim(0.75, 1.01)
+        ax.set_xlim(0, self.simulator.scenario.total_time)
+        ax.grid(True, alpha=0.3)
+        ax.text(0.02, 0.95, '(a)', transform=ax.transAxes, fontsize=40, fontweight='bold', va='top')
+        ax.tick_params(axis='both', which='major', labelsize=40)
+        
+        # Add scenario difficulty annotation
+        difficulty = self.simulator.scenario.difficulty_factor
+        ax.text(0.98, 0.95, f'Difficulty: {difficulty:.2f}', transform=ax.transAxes, 
+                fontsize=28, ha='right', va='top', bbox=dict(boxstyle="round,pad=0.3", facecolor='white', alpha=0.8))
+    
+    def _plot_communication_overhead(self, ax):
+        """Plot communication overhead."""
+        for name, color in self.colors.items():
+            if name in self.simulator.results:
+                data = self.simulator.results[name]
+                ax.plot(data['time'], data['cum_comm'], color=color, linewidth=3.5)
+        
+        # Highlight critical event
+        event_time = self.simulator.scenario.critical_event_time
+        ax.axvspan(event_time - 0.2, event_time + 1.0, alpha=0.1, color='red')
+        ax.axvline(x=event_time, color='red', linestyle='-', linewidth=2.0, alpha=0.6)
+        
+        ax.set_ylabel('Normalized Cumulative\nCommunication Overhead', fontsize=40, weight='bold')
+        ax.set_xlabel('Time (seconds)', fontsize=40, weight='bold')
+        ax.set_ylim(0, 4)
+        ax.set_xlim(0, self.simulator.scenario.total_time)
+        ax.grid(True, alpha=0.3)
+        ax.text(0.02, 0.95, '(b)', transform=ax.transAxes, fontsize=40, fontweight='bold', va='top')
+        ax.tick_params(axis='both', which='major', labelsize=40)
+    
+    def _plot_performance_radar(self, ax):
+        """Plot radar chart of performance metrics."""
+        if not self.simulator.metrics:
+            return
+        
+        # Select key metrics for radar
+        metrics_to_plot = ['goal_satisfaction_avg', 'communication_efficiency', 
+                          'latency_consistency', 'performance_score']
+        
+        approaches = list(self.simulator.metrics.keys())
+        num_vars = len(metrics_to_plot)
+        
+        # Compute angles
+        angles = np.linspace(0, 2 * np.pi, num_vars, endpoint=False).tolist()
+        angles += angles[:1]  # Close the loop
+        
+        for approach in approaches:
+            values = []
+            for metric in metrics_to_plot:
+                if metric in self.simulator.metrics[approach]:
+                    val = self.simulator.metrics[approach][metric]
+                    # Normalize to 0-1 for radar
+                    if metric == 'goal_satisfaction_avg':
+                        values.append(val)  # Already 0-1
+                    elif metric == 'communication_efficiency':
+                        values.append(min(val / 5, 1.0))
+                    elif metric == 'latency_consistency':
+                        values.append(min(val / 0.5, 1.0))
+                    elif metric == 'performance_score':
+                        values.append(val)
+                else:
+                    values.append(0)
+            
+            values += values[:1]  # Close the loop
+            
+            ax.plot(angles, values, 'o-', linewidth=3, 
+                   color=self.colors.get(approach, 'gray'), 
+                   label=approach[:15])
+            ax.fill(angles, values, alpha=0.1, color=self.colors.get(approach, 'gray'))
+        
+        ax.set_xticks(angles[:-1])
+        ax.set_xticklabels(['Goal\nSatisfaction', 'Comm\nEfficiency', 
+                           'Latency\nConsistency', 'Overall\nScore'])
+        ax.set_title('Performance Radar', fontsize=36, weight='bold')
+        ax.grid(True)
+        ax.legend(fontsize=28, loc='upper right', bbox_to_anchor=(1.4, 1.0))
+    
+    def _plot_decision_latency(self, ax):
+        """Plot decision latency."""
+        for name, color in self.colors.items():
+            if name in self.simulator.results:
+                data = self.simulator.results[name]
+                ax.plot(data['time'], data['latency'], color=color, linewidth=3.5)
+        
+        # Highlight critical event
+        event_time = self.simulator.scenario.critical_event_time
+        ax.axvspan(event_time - 0.2, event_time + 1.0, alpha=0.1, color='red', label='Critical Event Window')
+        ax.axvline(x=event_time, color='red', linestyle='-', linewidth=2.0, alpha=0.6)
+        
+        # Add latency values at critical time
+        event_idx = np.argmin(np.abs(self.simulator.results['Proposed (Goal-Aware)']['time'] - event_time))
+        
+        for name, color in self.colors.items():
+            if name in self.simulator.results:
+                latency = self.simulator.results[name]['latency'][event_idx]
+                ax.plot(event_time, latency, 'o', color=color, markersize=24)
+                
+                # Annotate latency value
+                offset = 0.8 if name == 'Proposed (Goal-Aware)' else -1.0 if name == 'Uncertainty-Only (Ablation)' else 1.5
+                ax.annotate(f'{latency:.1f} ms', 
+                           xy=(event_time, latency),
+                           xytext=(event_time + offset, latency + (2 if offset > 0 else -2)),
+                           arrowprops=dict(arrowstyle='->', color=color, alpha=0.7, lw=2.5),
+                           fontsize=36, color=color, fontweight='bold')
+        
+        ax.set_ylabel('End-to-End Decision\nLatency (ms)', fontsize=40, weight='bold')
+        ax.set_xlabel('Time (seconds)', fontsize=40, weight='bold')
+        ax.set_ylim(10, 52)
+        ax.set_xlim(0, self.simulator.scenario.total_time)
+        ax.grid(True, alpha=0.3)
+        ax.text(0.02, 0.95, '(c)', transform=ax.transAxes, fontsize=40, fontweight='bold', va='top')
+        ax.tick_params(axis='both', which='major', labelsize=40)
+        
+        # Create legend
+        from matplotlib.lines import Line2D
+        legend_elements = [
+            Line2D([0], [0], color=self.colors['Proposed (Goal-Aware)'], linewidth=3.5, label='Proposed (Goal-Aware)'),
+            Line2D([0], [0], color=self.colors['Uncertainty-Only (Ablation)'], linewidth=3.0, linestyle='--', label='Uncertainty-Only'),
+            Line2D([0], [0], color=self.colors['Hierarchical Baseline (Fixed)'], linewidth=2.5, linestyle=':', label='Fixed Baseline'),
+            Line2D([0], [0], color='red', alpha=0.3, linewidth=15, label='Critical Event')
+        ]
+        ax.legend(handles=legend_elements, loc='upper right', fontsize=32, framealpha=0.5)
+    
+    def _plot_scenario_parameters(self, ax):
+        """Plot current scenario parameters."""
+        scenario = self.simulator.scenario
+        
+        params = {
+            'Traffic Density': scenario.traffic_density,
+            'Vehicle Speed': scenario.vehicle_speed,
+            'Road Complexity': scenario.road_complexity,
+            'Uncertainty': scenario.uncertainty_level,
+            'Sensor Noise': scenario.sensor_noise,
+            'Comm Bandwidth': scenario.bandwidth,
+            'Comm Latency': scenario.latency,
+            'Packet Loss': scenario.packet_loss * 100  # Convert to percentage
+        }
+        
+        names = list(params.keys())
+        values = list(params.values())
+        
+        # Normalize for visualization (0-1 for most)
+        normalized = []
+        for name, value in zip(names, values):
+            if 'Speed' in name:
+                normalized.append(value / 120)  # Max speed 120 km/h
+            elif 'Bandwidth' in name:
+                normalized.append(value / 100)  # Max 100 Mbps
+            elif 'Latency' in name:
+                normalized.append(1 - value / 100)  # Invert (lower latency is better)
+            elif 'Loss' in name:
+                normalized.append(1 - value / 100)  # Invert (lower loss is better)
+            else:
+                normalized.append(value)  # Already 0-1
+        
+        y_pos = np.arange(len(names))
+        bars = ax.barh(y_pos, normalized, color='steelblue', alpha=0.7)
+        
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(names, fontsize=28)
+        ax.set_xlabel('Normalized Value', fontsize=32)
+        ax.set_title('Scenario Parameters', fontsize=36, weight='bold')
+        ax.set_xlim(0, 1)
+        ax.grid(True, alpha=0.3, axis='x')
+        
+        # Add actual values
+        for i, (name, value) in enumerate(params.items()):
+            if 'Loss' in name:
+                text = f'{value:.1f}%'
+            elif 'Speed' in name:
+                text = f'{value:.0f} km/h'
+            elif 'Bandwidth' in name:
+                text = f'{value:.0f} Mbps'
+            elif 'Latency' in name:
+                text = f'{value:.0f} ms'
+            else:
+                text = f'{value:.2f}'
+            
+            ax.text(normalized[i] + 0.02, i, text, va='center', fontsize=26)
+    
+    def _plot_comparative_analysis(self, ax):
+        """Plot comparative analysis between approaches."""
+        comparative = self.simulator.get_comparative_analysis()
+        
+        if not comparative:
+            return
+        
+        metrics = ['Goal Satisfaction', 'Communication', 'Latency', 'Recovery']
+        x = np.arange(len(metrics))
+        width = 0.35
+        
+        for i, (approach, improvements) in enumerate(comparative.items()):
+            values = [
+                improvements.get('goal_improvement_pct', 0),
+                improvements.get('communication_reduction_pct', 0),
+                improvements.get('latency_reduction_pct', 0),
+                improvements.get('recovery_improvement_pct', 0)
+            ]
+            
+            color = self.colors.get(approach, 'gray')
+            offset = (i - 0.5) * width
+            bars = ax.bar(x + offset, values, width, color=color, alpha=0.7, label=approach[:15])
+            
+            # Add value labels
+            for bar, val in zip(bars, values):
+                if abs(val) > 1:
+                    ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + (1 if val > 0 else -5),
+                           f'{val:+.1f}%', ha='center', va='bottom' if val > 0 else 'top', fontsize=26)
+        
+        ax.set_ylabel('Improvement (%)', fontsize=32)
+        ax.set_title('Proposed vs. Baselines', fontsize=36, weight='bold')
+        ax.set_xticks(x)
+        ax.set_xticklabels(metrics, fontsize=28)
+        ax.axhline(y=0, color='black', linewidth=1)
+        ax.grid(True, alpha=0.3, axis='y')
+        ax.legend(fontsize=24)
+    
+    def _plot_time_series_comparison(self, ax):
+        """Plot normalized time-series comparison."""
+        if not self.simulator.results:
+            return
+        
+        # Normalize all metrics to 0-1 for comparison
+        approaches = list(self.simulator.results.keys())
+        num_approaches = len(approaches)
+        
+        # Create subplots within subplot
+        metrics_to_plot = ['goal', 'comm', 'latency']
+        metric_names = ['Goal Satisfaction', 'Comm Overhead', 'Latency']
+        
+        colors = ['green', 'orange', 'red']
+        
+        for i, (metric, name, color) in enumerate(zip(metrics_to_plot, metric_names, colors)):
+            # Create mini-axes
+            mini_ax = ax.inset_axes([0.05, 0.7 - i*0.3, 0.9, 0.25])
+            
+            for approach in approaches:
+                data = self.simulator.results[approach][metric]
+                time = self.simulator.results[approach]['time']
+                
+                # Normalize
+                if metric == 'goal':
+                    norm_data = data  # Already 0-1
+                elif metric == 'comm':
+                    norm_data = data / np.max(data) if np.max(data) > 0 else data
+                else:  # latency
+                    norm_data = 1 - (data - 10) / 40  # Normalize 10-50 to 1-0
+                
+                mini_ax.plot(time, norm_data, color=self.colors[approach], 
+                           linewidth=2, alpha=0.7)
+            
+            mini_ax.set_ylabel(name, fontsize=20, color=color)
+            mini_ax.tick_params(axis='y', labelcolor=color)
+            mini_ax.grid(True, alpha=0.2)
+            
+            if i < 2:
+                mini_ax.set_xticklabels([])
+        
+        ax.set_xlabel('Time (seconds)', fontsize=32)
+        ax.set_title('Normalized Metrics Comparison', fontsize=36, weight='bold')
+        ax.set_xticks([])
+        ax.set_yticks([])
+    
+    def _plot_efficiency_metrics(self, ax):
+        """Plot efficiency metrics bar chart."""
+        if not self.simulator.metrics:
+            return
+        
+        approaches = list(self.simulator.metrics.keys())
+        efficiency_metrics = ['communication_efficiency', 'latency_consistency', 'performance_score']
+        metric_names = ['Comm Efficiency', 'Latency Consistency', 'Overall Score']
+        
+        x = np.arange(len(metric_names))
+        width = 0.25
+        
+        for i, approach in enumerate(approaches):
+            values = []
+            for metric in efficiency_metrics:
+                if metric in self.simulator.metrics[approach]:
+                    val = self.simulator.metrics[approach][metric]
+                    # Scale appropriately
+                    if metric == 'communication_efficiency':
+                        values.append(min(val / 5, 1.0))
+                    elif metric == 'latency_consistency':
+                        values.append(min(val / 0.5, 1.0))
+                    else:
+                        values.append(val)
+                else:
+                    values.append(0)
+            
+            offset = (i - 1) * width
+            bars = ax.bar(x + offset, values, width, color=self.colors[approach], 
+                         alpha=0.7, label=approach[:10])
+            
+            # Add value labels
+            for bar, val in zip(bars, values):
+                ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.02,
+                       f'{val:.2f}', ha='center', va='bottom', fontsize=24)
+        
+        ax.set_ylabel('Normalized Score', fontsize=32)
+        ax.set_title('Efficiency Metrics', fontsize=36, weight='bold')
+        ax.set_xticks(x)
+        ax.set_xticklabels(metric_names, fontsize=28)
+        ax.set_ylim(0, 1.1)
+        ax.grid(True, alpha=0.3, axis='y')
+        ax.legend(fontsize=24)
+
+# ============================================
+# INTERACTIVE DASHBOARD
+# ============================================
+
+class InteractiveDashboard:
+    """Interactive dashboard for parameter exploration."""
+    
+    def __init__(self, simulator: DynamicGoalAwareSimulator):
+        self.simulator = simulator
+        self.visualization = DynamicVisualization(simulator)
+        self.output = widgets.Output()
+        
+        # Create widgets
+        self._create_scenario_widgets()
+        self._create_approach_widgets()
+        self._create_control_widgets()
+        
+        # Assemble dashboard
+        self.dashboard = self._assemble_dashboard()
+    
+    def _create_scenario_widgets(self):
+        """Create scenario parameter widgets."""
+        
+        # Scenario type
+        self.scenario_type = widgets.Dropdown(
+            options=[(s.name.replace('_', ' '), s) for s in ScenarioType],
+            value=ScenarioType.NORMAL_DRIVING,
+            description='Scenario:',
+            style={'description_width': 'initial'}
+        )
+        
+        # Environment condition
+        self.environment = widgets.Dropdown(
+            options=[(e.name, e) for e in EnvironmentCondition],
+            value=EnvironmentCondition.CLEAR,
+            description='Environment:',
+            style={'description_width': 'initial'}
+        )
+        
+        # Communication quality
+        self.comm_quality = widgets.Dropdown(
+            options=[(c.name, c) for c in CommunicationQuality],
+            value=CommunicationQuality.GOOD,
+            description='Comm Quality:',
+            style={'description_width': 'initial'}
+        )
+        
+        # Parameter sliders
+        self.traffic_density = widgets.FloatSlider(
+            value=0.5, min=0.1, max=1.0, step=0.1,
+            description='Traffic Density:',
+            continuous_update=False,
+            style={'description_width': 'initial'}
+        )
+        
+        self.vehicle_speed = widgets.FloatSlider(
+            value=60.0, min=20.0, max=120.0, step=5.0,
+            description='Vehicle Speed (km/h):',
+            continuous_update=False,
+            style={'description_width': 'initial'}
+        )
+        
+        self.uncertainty_level = widgets.FloatSlider(
+            value=0.2, min=0.0, max=1.0, step=0.1,
+            description='Uncertainty Level:',
+            continuous_update=False,
+            style={'description_width': 'initial'}
+        )
+        
+        self.sensor_noise = widgets.FloatSlider(
+            value=0.1, min=0.0, max=0.5, step=0.05,
+            description='Sensor Noise:',
+            continuous_update=False,
+            style={'description_width': 'initial'}
+        )
+        
+        self.bandwidth = widgets.FloatSlider(
+            value=10.0, min=1.0, max=100.0, step=1.0,
+            description='Bandwidth (Mbps):',
+            continuous_update=False,
+            style={'description_width': 'initial'}
+        )
+        
+        # Event parameters
+        self.event_time = widgets.FloatSlider(
+            value=5.0, min=2.0, max=8.0, step=0.5,
+            description='Event Time (s):',
+            continuous_update=False,
+            style={'description_width': 'initial'}
+        )
+        
+        self.event_duration = widgets.FloatSlider(
+            value=1.5, min=0.5, max=3.0, step=0.1,
+            description='Event Duration (s):',
+            continuous_update=False,
+            style={'description_width': 'initial'}
+        )
+        
+        # Set up change handlers
+        scenario_widgets = [
+            self.scenario_type, self.environment, self.comm_quality,
+            self.traffic_density, self.vehicle_speed, self.uncertainty_level,
+            self.sensor_noise, self.bandwidth, self.event_time, self.event_duration
+        ]
+        
+        for widget in scenario_widgets:
+            widget.observe(self._on_scenario_change, 'value')
+    
+    def _create_approach_widgets(self):
+        """Create approach-specific parameter widgets."""
+        
+        # Approach selection
+        self.approach_selection = widgets.Dropdown(
+            options=list(self.simulator.approaches.keys()),
+            value='Proposed (Goal-Aware)',
+            description='Select Approach:',
+            style={'description_width': 'initial'}
+        )
+        
+        # Approach parameters
+        self.goal_efficiency = widgets.FloatSlider(
+            value=0.95, min=0.5, max=1.0, step=0.05,
+            description='Goal Efficiency:',
+            continuous_update=False,
+            style={'description_width': 'initial'}
+        )
+        
+        self.comm_efficiency = widgets.FloatSlider(
+            value=0.85, min=0.3, max=1.0, step=0.05,
+            description='Comm Efficiency:',
+            continuous_update=False,
+            style={'description_width': 'initial'}
+        )
+        
+        self.latency_efficiency = widgets.FloatSlider(
+            value=0.90, min=0.5, max=1.0, step=0.05,
+            description='Latency Efficiency:',
+            continuous_update=False,
+            style={'description_width': 'initial'}
+        )
+        
+        # Set up change handlers
+        approach_widgets = [
+            self.approach_selection, self.goal_efficiency, 
+            self.comm_efficiency, self.latency_efficiency
+        ]
+        
+        for widget in approach_widgets:
+            widget.observe(self._on_approach_change, 'value')
+    
+    def _create_control_widgets(self):
+        """Create control widgets."""
+        self.run_button = widgets.Button(
+            description='Run Simulation',
+            button_style='success',
+            icon='play',
+            layout=widgets.Layout(width='200px', height='50px')
+        )
+        self.run_button.on_click(self._run_simulation)
+        
+        self.reset_button = widgets.Button(
+            description='Reset to Defaults',
+            button_style='warning',
+            icon='refresh',
+            layout=widgets.Layout(width='200px', height='50px')
+        )
+        self.reset_button.on_click(self._reset_parameters)
+        
+        self.save_button = widgets.Button(
+            description='Save Results',
+            button_style='info',
+            icon='save',
+            layout=widgets.Layout(width='200px', height='50px')
+        )
+        self.save_button.on_click(self._save_results)
+    
+    def _assemble_dashboard(self):
+        """Assemble the complete dashboard."""
+        # Scenario controls
+        scenario_box = widgets.VBox([
+            widgets.Label('Scenario Controls', fontweight='bold'),
+            self.scenario_type,
+            self.environment,
+            self.comm_quality,
+            widgets.HTML('<hr>'),
+            self.traffic_density,
+            self.vehicle_speed,
+            self.uncertainty_level,
+            self.sensor_noise,
+            self.bandwidth,
+            widgets.HTML('<hr>'),
+            self.event_time,
+            self.event_duration
+        ], layout=widgets.Layout(width='400px'))
+        
+        # Approach controls
+        approach_box = widgets.VBox([
+            widgets.Label('Approach Controls', fontweight='bold'),
+            self.approach_selection,
+            widgets.HTML('<hr>'),
+            self.goal_efficiency,
+            self.comm_efficiency,
+            self.latency_efficiency
+        ], layout=widgets.Layout(width='400px'))
+        
+        # Control panel
+        control_box = widgets.VBox([
+            widgets.Label('Simulation Controls', fontweight='bold'),
+            widgets.HBox([self.run_button, self.reset_button, self.save_button])
+        ], layout=widgets.Layout(width='400px'))
+        
+        # Left panel
+        left_panel = widgets.VBox([
+            scenario_box,
+            widgets.HTML('<hr>'),
+            approach_box,
+            widgets.HTML('<hr>'),
+            control_box
+        ])
+        
+        # Full dashboard
+        dashboard = widgets.HBox([
+            left_panel,
+            self.output
+        ], layout=widgets.Layout(width='100%', height='1000px'))
+        
+        return dashboard
+    
+    def _on_scenario_change(self, change):
+        """Handle scenario parameter changes."""
+        param_map = {
+            'scenario_type': ('scenario_type', lambda x: x),
+            'environment': ('environment', lambda x: x),
+            'comm_quality': ('communication_quality', lambda x: x),
+            'traffic_density': ('traffic_density', float),
+            'vehicle_speed': ('vehicle_speed', float),
+            'uncertainty_level': ('uncertainty_level', float),
+            'sensor_noise': ('sensor_noise', float),
+            'bandwidth': ('bandwidth', float),
+            'event_time': ('critical_event_time', float),
+            'event_duration': ('event_duration', float)
+        }
+        
+        widget_name = change['owner'].description.split(':')[0].lower().replace(' ', '_')
+        if widget_name in param_map:
+            param_name, converter = param_map[widget_name]
+            self.simulator.update_scenario_parameter(param_name, converter(change['new']))
+            
+            # Update visualization
+            with self.output:
+                clear_output(wait=True)
+                self.visualization.create_visualization()
+    
+    def _on_approach_change(self, change):
+        """Handle approach parameter changes."""
+        if change['owner'] == self.approach_selection:
+            # Update sliders based on selected approach
+            approach = self.simulator.approaches[change['new']]
+            self.goal_efficiency.value = approach.goal_efficiency
+            self.comm_efficiency.value = approach.communication_efficiency
+            self.latency_efficiency.value = approach.latency_efficiency
+        else:
+            # Update approach parameters
+            approach_name = self.approach_selection.value
+            if approach_name in self.simulator.approaches:
+                approach = self.simulator.approaches[approach_name]
+                
+                if change['owner'] == self.goal_efficiency:
+                    approach.goal_efficiency = change['new']
+                elif change['owner'] == self.comm_efficiency:
+                    approach.communication_efficiency = change['new']
+                elif change['owner'] == self.latency_efficiency:
+                    approach.latency_efficiency = change['new']
+                
+                # Re-run simulation
+                self.simulator.run_simulation()
+                
+                # Update visualization
+                with self.output:
+                    clear_output(wait=True)
+                    self.visualization.create_visualization()
+    
+    def _run_simulation(self, b):
+        """Run full simulation."""
+        with self.output:
+            clear_output(wait=True)
+            print("Running simulation...")
+            self.simulator.run_simulation()
+            self.visualization.create_visualization()
+            self._print_summary()
+    
+    def _reset_parameters(self, b):
+        """Reset all parameters to defaults."""
+        # Reset simulator
+        self.simulator = DynamicGoalAwareSimulator()
+        self.visualization = DynamicVisualization(self.simulator)
+        
+        # Reset widget values
+        self.scenario_type.value = ScenarioType.NORMAL_DRIVING
+        self.environment.value = EnvironmentCondition.CLEAR
+        self.comm_quality.value = CommunicationQuality.GOOD
+        self.traffic_density.value = 0.5
+        self.vehicle_speed.value = 60.0
+        self.uncertainty_level.value = 0.2
+        self.sensor_noise.value = 0.1
+        self.bandwidth.value = 10.0
+        self.event_time.value = 5.0
+        self.event_duration.value = 1.5
+        
+        self.approach_selection.value = 'Proposed (Goal-Aware)'
+        self.goal_efficiency.value = 0.95
+        self.comm_efficiency.value = 0.85
+        self.latency_efficiency.value = 0.90
+        
+        with self.output:
+            clear_output(wait=True)
+            print("Parameters reset to defaults.")
+            self.visualization.create_visualization()
+            self._print_summary()
+    
+    def _save_results(self, b):
+        """Save simulation results."""
+        results = {
+            'scenario': {
+                'type': self.simulator.scenario.scenario_type.name,
+                'environment': self.simulator.scenario.environment.name,
+                'communication_quality': self.simulator.scenario.communication_quality.name,
+                'difficulty_factor': float(self.simulator.scenario.difficulty_factor),
+                'traffic_density': float(self.simulator.scenario.traffic_density),
+                'vehicle_speed': float(self.simulator.scenario.vehicle_speed),
+                'uncertainty_level': float(self.simulator.scenario.uncertainty_level)
+            },
+            'performance_metrics': self.simulator.metrics,
+            'comparative_analysis': self.simulator.get_comparative_analysis()
+        }
+        
+        with open('simulation_results.json', 'w') as f:
+            json.dump(results, f, indent=2, default=str)
+        
+        with self.output:
+            clear_output(wait=True)
+            self.visualization.create_visualization()
+            print("Results saved to 'simulation_results.json'")
+    
+    def _print_summary(self):
+        """Print performance summary."""
+        print("="*100)
+        print("DYNAMIC GOAL-AWARE FRAMEWORK - PERFORMANCE SUMMARY")
+        print("="*100)
+        
+        scenario = self.simulator.scenario
+        print(f"\nScenario: {scenario.scenario_type.name.replace('_', ' ')}")
+        print(f"Environment: {scenario.environment.name}")
+        print(f"Communication Quality: {scenario.communication_quality.name}")
+        print(f"Difficulty Factor: {scenario.difficulty_factor:.2f}")
+        print("-"*100)
+        
+        print(f"\n{'Metric':<40} {'Proposed':<15} {'Uncertainty-Only':<15} {'Fixed Baseline':<15}")
+        print("-"*100)
+        
+        # Goal satisfaction
+        proposed_goal = self.simulator.metrics['Proposed (Goal-Aware)']['goal_satisfaction_avg']
+        uncertainty_goal = self.simulator.metrics['Uncertainty-Only (Ablation)']['goal_satisfaction_avg']
+        fixed_goal = self.simulator.metrics['Hierarchical Baseline (Fixed)']['goal_satisfaction_avg']
+        print(f"{'Goal Satisfaction Probability':<40} {proposed_goal:.3f}{'':<9} {uncertainty_goal:.3f}{'':<9} {fixed_goal:.3f}{'':<9}")
+        
+        # Communication overhead
+        proposed_comm = self.simulator.metrics['Proposed (Goal-Aware)']['communication_total']
+        uncertainty_comm = self.simulator.metrics['Uncertainty-Only (Ablation)']['communication_total']
+        fixed_comm = self.simulator.metrics['Hierarchical Baseline (Fixed)']['communication_total']
+        print(f"{'Communication Overhead':<40} {1.00:<15.2f} {uncertainty_comm/proposed_comm:.2f}{'':<10} {fixed_comm/proposed_comm:.2f}{'':<10}")
+        
+        # Decision latency
+        proposed_lat = self.simulator.metrics['Proposed (Goal-Aware)']['latency_avg']
+        uncertainty_lat = self.simulator.metrics['Uncertainty-Only (Ablation)']['latency_avg']
+        fixed_lat = self.simulator.metrics['Hierarchical Baseline (Fixed)']['latency_avg']
+        print(f"{'Decision Latency (ms)':<40} {proposed_lat:.1f}{'':<10} {uncertainty_lat:.1f}{'':<10} {fixed_lat:.1f}{'':<10}")
+        
+        # Recovery time
+        proposed_rec = self.simulator.metrics['Proposed (Goal-Aware)']['recovery_time']
+        uncertainty_rec = self.simulator.metrics['Uncertainty-Only (Ablation)']['recovery_time']
+        fixed_rec = self.simulator.metrics['Hierarchical Baseline (Fixed)']['recovery_time']
+        print(f"{'Recovery Time (s)':<40} {proposed_rec:.2f}{'':<10} {uncertainty_rec:.2f}{'':<10} {fixed_rec:.2f}{'':<10}")
+        
+        # Performance score
+        proposed_score = self.simulator.metrics['Proposed (Goal-Aware)']['performance_score']
+        uncertainty_score = self.simulator.metrics['Uncertainty-Only (Ablation)']['performance_score']
+        fixed_score = self.simulator.metrics['Hierarchical Baseline (Fixed)']['performance_score']
+        print(f"{'Overall Performance Score':<40} {proposed_score:.3f}{'':<9} {uncertainty_score:.3f}{'':<9} {fixed_score:.3f}{'':<9}")
+        print("="*100)
+        
+        # Comparative improvements
+        comparative = self.simulator.get_comparative_analysis()
+        print("\nPERFORMANCE IMPROVEMENTS (Proposed vs. Baselines):")
+        print("-"*60)
+        
+        for baseline, improvements in comparative.items():
+            goal_imp = improvements.get('goal_improvement_pct', 0)
+            comm_imp = improvements.get('communication_reduction_pct', 0)
+            lat_imp = improvements.get('latency_reduction_pct', 0)
+            rec_imp = improvements.get('recovery_improvement_pct', 0)
+            
+            print(f"\nvs {baseline}:")
+            print(f"  Goal Satisfaction: {goal_imp:+.1f}%")
+            print(f"  Communication Reduction: {comm_imp:+.1f}%")
+            print(f"  Latency Reduction: {lat_imp:+.1f}%")
+            print(f"  Recovery Speed: {rec_imp:+.1f}%")
+        
+        print("="*100)
+    
+    def display(self):
+        """Display the dashboard."""
+        display(self.dashboard)
+        # Initial run
+        with self.output:
+            self.visualization.create_visualization()
+            self._print_summary()
+
+# ============================================
+# MAIN EXECUTION
+# ============================================
+
+def main():
+    """Main execution function."""
+    print("="*80)
+    print("DYNAMIC GOAL-AWARE FRAMEWORK SIMULATION")
+    print("Fully Parameter-Responsive Performance Evaluation")
+    print("="*80)
+    
+    # Create simulator
+    simulator = DynamicGoalAwareSimulator()
+    
+    # Run initial simulation
+    print("\nRunning initial simulation with default parameters...")
+    simulator.run_simulation()
+    
+    # Create visualization
+    visualizer = DynamicVisualization(simulator)
+    visualizer.create_visualization('goal_aware_results.jpg')
+    
+    # Print summary
+    print("\nInitial Performance Summary:")
+    print("-"*80)
+    
+    for name, metrics in simulator.metrics.items():
+        print(f"\n{name}:")
+        print(f"  Goal Satisfaction: {metrics['goal_satisfaction_avg']:.3f}")
+        print(f"  Communication Total: {metrics['communication_total']:.3f}")
+        print(f"  Average Latency: {metrics['latency_avg']:.1f} ms")
+        print(f"  Recovery Time: {metrics['recovery_time']:.2f} s")
+        print(f"  Performance Score: {metrics['performance_score']:.3f}")
+    
+    # Demonstrate parameter responsiveness
+    print("\n" + "="*80)
+    print("DEMONSTRATING PARAMETER RESPONSIVENESS")
+    print("="*80)
+    
+    # Example 1: Change scenario to emergency braking
+    print("\n1. Changing scenario to Emergency Braking...")
+    simulator.update_scenario_parameter('scenario_type', ScenarioType.EMERGENCY_BRAKING)
+    proposed_metrics = simulator.metrics['Proposed (Goal-Aware)']
+    print(f"   Proposed goal satisfaction: {proposed_metrics['goal_satisfaction_avg']:.3f}")
+    print(f"   Proposed latency: {proposed_metrics['latency_avg']:.1f} ms")
+    
+    # Example 2: Increase traffic density
+    print("\n2. Increasing traffic density to 0.8...")
+    simulator.update_scenario_parameter('traffic_density', 0.8)
+    proposed_metrics = simulator.metrics['Proposed (Goal-Aware)']
+    uncertainty_metrics = simulator.metrics['Uncertainty-Only (Ablation)']
+    print(f"   Proposed goal: {proposed_metrics['goal_satisfaction_avg']:.3f}")
+    print(f"   Uncertainty-only goal: {uncertainty_metrics['goal_satisfaction_avg']:.3f}")
+    print(f"   Goal improvement: {(proposed_metrics['goal_satisfaction_avg'] - uncertainty_metrics['goal_satisfaction_avg'])/uncertainty_metrics['goal_satisfaction_avg']*100:.1f}%")
+    
+    # Example 3: Degrade communication quality
+    print("\n3. Setting communication quality to POOR...")
+    simulator.update_scenario_parameter('communication_quality', CommunicationQuality.POOR)
+    proposed_comm = simulator.metrics['Proposed (Goal-Aware)']['communication_total']
+    fixed_comm = simulator.metrics['Hierarchical Baseline (Fixed)']['communication_total']
+    print(f"   Proposed communication: {1.00:.2f} (baseline)")
+    print(f"   Fixed baseline communication: {fixed_comm/proposed_comm:.2f}x more")
+    
+    # Create comparative analysis
+    comparative = simulator.get_comparative_analysis()
+    print("\n" + "="*80)
+    print("COMPARATIVE ANALYSIS")
+    print("="*80)
+    
+    for baseline, improvements in comparative.items():
+        print(f"\nProposed vs {baseline}:")
+        print(f"  Goal satisfaction improvement: {improvements.get('goal_improvement_pct', 0):.1f}%")
+        print(f"  Communication reduction: {improvements.get('communication_reduction_pct', 0):.1f}%")
+        print(f"  Latency reduction: {improvements.get('latency_reduction_pct', 0):.1f}%")
+    
+    # Interactive dashboard option
+    print("\n" + "="*80)
+    print("INTERACTIVE EXPLORATION")
+    print("="*80)
+    print("\nTo explore parameters interactively, run:")
+    print("  dashboard = InteractiveDashboard(simulator)")
+    print("  dashboard.display()")
+    
+    return simulator
+
+# ============================================
+# EXAMPLE USAGE PATTERNS
+# ============================================
+
+if __name__ == "__main__":
+    
+    # Option 1: Run full analysis
+    simulator = main()
+    
+    # Option 2: Interactive dashboard (uncomment to use)
+    # dashboard = InteractiveDashboard(simulator)
+    # dashboard.display()
+    
+    # Option 3: Programmatic parameter exploration
+    print("\n" + "="*80)
+    print("PROGRAMMATIC PARAMETER EXPLORATION")
+    print("="*80)
+    
+    print("\nExample 1: Test different environmental conditions")
+    print("  conditions = [EnvironmentCondition.CLEAR, EnvironmentCondition.RAIN,")
+    print("                EnvironmentCondition.FOG, EnvironmentCondition.NIGHT]")
+    print("  for condition in conditions:")
+    print("    simulator.update_scenario_parameter('environment', condition)")
+    print("    simulator.run_simulation()")
+    print("    metrics = simulator.metrics['Proposed (Goal-Aware)']")
+    print("    print(f'{condition.name}: Goal={metrics['goal_satisfaction_avg']:.3f}, Latency={metrics['latency_avg']:.1f}ms')")
+    
+    print("\nExample 2: Sensitivity to uncertainty level")
+    print("  uncertainty_levels = [0.1, 0.3, 0.5, 0.7, 0.9]")
+    print("  for uncertainty in uncertainty_levels:")
+    print("    simulator.update_scenario_parameter('uncertainty_level', uncertainty)")
+    print("    simulator.run_simulation()")
+    print("    # Compare approaches...")
+    
+    print("\nExample 3: Communication-quality tradeoff analysis")
+    print("  bandwidths = [1, 5, 10, 20, 50]")
+    print("  latencies = [10, 20, 50, 100, 200]")
+    print("  for bw in bandwidths:")
+    print("    for lat in latencies:")
+    print("      simulator.update_scenario_parameter('bandwidth', bw)")
+    print("      simulator.update_scenario_parameter('latency', lat)")
+    print("      simulator.run_simulation()")
+    print("      # Analyze performance tradeoffs...")
+    
+    print("\nExample 4: Stress testing under extreme conditions")
+    print("  # Set worst-case scenario")
+    print("  simulator.update_scenario_parameter('scenario_type', ScenarioType.SENSOR_FAILURE)")
+    print("  simulator.update_scenario_parameter('environment', EnvironmentCondition.SNOW)")
+    print("  simulator.update_scenario_parameter('communication_quality', CommunicationQuality.INTERMITTENT)")
+    print("  simulator.update_scenario_parameter('traffic_density', 0.9)")
+    print("  simulator.update_scenario_parameter('uncertainty_level', 0.8)")
+    print("  simulator.run_simulation()")
+    print("  ")
+    print("  # Check which approaches remain safe")
+    print("  for name, metrics in simulator.metrics.items():")
+    print("    if metrics['goal_satisfaction_avg'] > 0.85:")
+    print("      print(f'{name}: ACCEPTABLE')")
+    print("    else:")
+    print("      print(f'{name}: UNACCEPTABLE')")
 
 
 
